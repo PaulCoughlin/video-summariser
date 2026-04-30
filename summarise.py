@@ -329,7 +329,7 @@ def main() -> None:
 
     print(f"[2/3] summarising with Claude (typically 30-90s for long videos)...", file=sys.stderr)
     try:
-        with _cli_spinner("Claude is working.."):
+        with _cli_spinner("Claude is roboting.."):
             body = run_claude(prompt)
     except SummariseError as e:
         sys.exit(f"error: {e}")
