@@ -279,9 +279,58 @@ async def diagnostics_stream(request: Request) -> StreamingResponse:
         loop.call_soon_threadsafe(queue.put_nowait, ("done", ""))
 
     def worker() -> None:
+        import json as _json
+        import re as _re
         import time
         import requests
         from youtube_transcript_api import YouTubeTranscriptApi
+
+        def _extract_message(text: str, content_type: str) -> str:
+            """Pull the user-facing message out of a YouTube response so the
+            log shows the *actual* server response, not boilerplate or markup.
+
+            JSON payloads — dig out playabilityStatus / errorScreen.
+            HTML — strip tags and collapse whitespace.
+            Anything else — first 400 chars verbatim.
+            """
+            text = (text or "").strip()
+            looks_json = "json" in content_type.lower() or text.startswith("{")
+            if looks_json:
+                try:
+                    data = _json.loads(text)
+                    ps = data.get("playabilityStatus") or {}
+                    if ps:
+                        bits: list[str] = []
+                        if "status" in ps:
+                            bits.append(f"status={ps['status']}")
+                        if "reason" in ps:
+                            bits.append(f"reason={ps['reason']!r}")
+                        es = ps.get("errorScreen", {}) or {}
+                        emr = es.get("playerErrorMessageRenderer", {}) or {}
+                        sub = emr.get("subreason", {}) or {}
+                        sub_text = sub.get("simpleText") or " ".join(
+                            r.get("text", "") for r in sub.get("runs", [])
+                        )
+                        if sub_text:
+                            bits.append(f"subreason={sub_text!r}")
+                        if bits:
+                            return "playabilityStatus { " + ", ".join(bits) + " }"
+                    # No playabilityStatus: dump compact JSON head.
+                    return _json.dumps(data, separators=(",", ":"))[:400]
+                except Exception:
+                    pass
+
+            # HTML / text: strip tags and collapse whitespace.
+            if "<" in text and ">" in text:
+                stripped = _re.sub(
+                    r"<(style|script)[^>]*>.*?</\1>", "", text,
+                    flags=_re.DOTALL | _re.IGNORECASE,
+                )
+                stripped = _re.sub(r"<[^>]+>", " ", stripped)
+                stripped = _re.sub(r"\s+", " ", stripped).strip()
+                return stripped[:400]
+
+            return text[:400]
 
         class LoggingSession(requests.Session):
             """A real requests.Session that streams every HTTP request and
@@ -308,18 +357,18 @@ async def diagnostics_stream(request: Request) -> StreamingResponse:
                         f"({time.monotonic() - t0:.2f}s)"
                     )
                     raise
-                # Always show status + size; on failures or JSON, dump a body snippet.
+                # Always show status + size; on failures or YT player JSON,
+                # dump a cleaned message extracted from the body.
                 ctype = r.headers.get("content-type", "")
                 tail = ""
                 show_body = (
                     r.status_code >= 400
                     or "json" in ctype.lower()
-                    or '"playabilityStatus"' in r.text[:1000]
-                    or '"errorScreen"' in r.text[:1000]
+                    or '"playabilityStatus"' in r.text[:2000]
+                    or '"errorScreen"' in r.text[:2000]
                 )
                 if show_body:
-                    body = r.text[:400].replace("\n", " ").replace("\r", "")
-                    tail = f" | body: {body}"
+                    tail = " | response: " + _extract_message(r.text, ctype)
                 progress(
                     f"    HTTP {method} {short_url} → {r.status_code} "
                     f"({len(r.content)}b, {time.monotonic() - t0:.2f}s){tail}"
@@ -394,9 +443,12 @@ async def diagnostics_stream(request: Request) -> StreamingResponse:
                         f"    → {len(segments)} segments ({time.monotonic() - t0:.2f}s)"
                     )
                 except Exception as e:
-                    msg = str(e).replace("\n", " ")[:500]
+                    # The actual YouTube response was already logged above by
+                    # LoggingSession. Just record which exception class fired
+                    # and total elapsed time — the library's long error text
+                    # is interpretation, not data.
                     progress(
-                        f"    → {type(e).__name__}: {msg} "
+                        f"    → raised {type(e).__name__} "
                         f"({time.monotonic() - t0:.2f}s)"
                     )
 
