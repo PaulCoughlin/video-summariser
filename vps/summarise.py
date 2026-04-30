@@ -10,6 +10,7 @@ from __future__ import annotations
 import os
 import re
 import sys
+from collections.abc import Callable
 from dataclasses import dataclass
 from urllib.parse import parse_qs, urlparse
 
@@ -150,38 +151,45 @@ def _is_retryable(exc: BaseException) -> bool:
     return name in {"ProxyError", "ConnectionError", "ConnectTimeout", "ReadTimeout", "SSLError"}
 
 
-def fetch_transcript(video_id: str) -> list[tuple[int, str]]:
+def fetch_transcript(
+    video_id: str,
+    on_progress: Callable[[str], None] | None = None,
+) -> list[tuple[int, str]]:
     """Fetch a YouTube transcript, trying configured proxy candidates in order.
 
     Returns segments as soon as any candidate succeeds. Re-raises the last
     retryable error if every candidate fails; raises non-retryable errors
     (e.g. TranscriptsDisabled) immediately so the caller can surface them.
     """
+    progress = on_progress or (lambda _msg: None)
     candidates = _proxy_candidates()
     if not candidates:
-        # No proxy configured — single attempt against the bare YouTube API.
+        progress("no proxy configured — fetching transcript directly")
         fetched = YouTubeTranscriptApi().fetch(
             video_id, languages=("en", "en-US", "en-GB")
         )
         return [(int(s.start), s.text.strip()) for s in fetched if s.text and s.text.strip()]
 
     last_error: BaseException | None = None
-    for candidate in candidates:
-        print(f"[fetch_transcript] trying {_mask(candidate)}", file=sys.stderr, flush=True)
+    for i, candidate in enumerate(candidates, 1):
+        masked = _mask(candidate)
+        progress(f"trying proxy {i}/{len(candidates)}: {masked}")
+        print(f"[fetch_transcript] trying {masked}", file=sys.stderr, flush=True)
         try:
             fetched = _build_api_for(candidate).fetch(
                 video_id, languages=("en", "en-US", "en-GB")
             )
-            print(f"[fetch_transcript] OK via {_mask(candidate)}", file=sys.stderr, flush=True)
+            progress(f"got transcript via proxy {i} ({masked})")
+            print(f"[fetch_transcript] OK via {masked}", file=sys.stderr, flush=True)
             return [(int(s.start), s.text.strip()) for s in fetched if s.text and s.text.strip()]
         except Exception as e:
             if _is_retryable(e):
+                progress(f"proxy {i} blocked or unreachable ({type(e).__name__}) — trying next")
                 print(f"[fetch_transcript] retryable {type(e).__name__}: trying next", file=sys.stderr, flush=True)
                 last_error = e
                 continue
-            raise  # non-retryable — let the caller map to a clean message
+            raise
 
-    # Every candidate failed.
     assert last_error is not None
     raise last_error
 
@@ -335,24 +343,31 @@ def check_openrouter_auth() -> tuple[bool, str]:
     return True, f"Authenticated as `{label}` — pay-as-you-go."
 
 
-def summarise_url(url: str, model_id: str) -> SummaryResult:
+def summarise_url(
+    url: str,
+    model_id: str,
+    on_progress: Callable[[str], None] | None = None,
+) -> SummaryResult:
+    progress = on_progress or (lambda _msg: None)
+
+    progress("parsing video URL")
     try:
         video_id = extract_video_id(url)
     except ValueError as e:
         raise SummariseError(str(e)) from e
 
+    progress(f"fetching transcript for {video_id}")
     try:
-        segments = fetch_transcript(video_id)
+        segments = fetch_transcript(video_id, on_progress=progress)
     except (TranscriptsDisabled, NoTranscriptFound):
         raise SummariseError("No English captions available for this video.")
     except VideoUnavailable:
         raise SummariseError("Video unavailable (private, removed, or region-locked).")
     except (RequestBlocked, IpBlocked):
         raise SummariseError(
-            "YouTube blocked the transcript request from this server's IP. "
-            "This is normal on datacenter IPs. Fix: sign up at https://www.webshare.io "
-            "for a residential proxy (~$3/month) and set WEBSHARE_PROXY_USERNAME and "
-            "WEBSHARE_PROXY_PASSWORD in the server env, then redeploy."
+            "YouTube blocked the transcript request from every configured proxy. "
+            "Add more PROXY_HOST_* entries from your Webshare dashboard, or upgrade "
+            "to a residential plan."
         )
     except AgeRestricted:
         raise SummariseError(
@@ -372,7 +387,9 @@ def summarise_url(url: str, model_id: str) -> SummaryResult:
 
     watch_url = canonical_watch_url(video_id)
     prompt = build_prompt(watch_url, format_transcript(segments))
+    progress(f"got {len(segments)} segments (~{len(prompt)//4} tokens) — calling {model_id}")
     body, usage = call_openrouter(prompt, model_id)
+    progress(f"summary received from {model_id}")
 
     return SummaryResult(
         video_id=video_id,
