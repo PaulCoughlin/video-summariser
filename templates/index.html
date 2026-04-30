@@ -61,14 +61,11 @@
         <div class="flex-1">
           <p class="font-medium text-amber-50">Claude Code isn't signed in on this machine.</p>
           <p class="mt-1 text-sm text-amber-200/90">{{ auth_message }}</p>
-          <p class="mt-2 text-sm text-amber-200/70">
-            Open a terminal, run <code class="bg-amber-950/60 px-1.5 py-0.5 rounded text-amber-100">claude</code> once and sign in, then click recheck below.
-          </p>
-          <form hx-post="/auth/refresh" hx-target="body" hx-swap="outerHTML" class="mt-3">
-            <button type="submit" class="text-sm bg-amber-900/50 hover:bg-amber-900 border border-amber-700/50 px-3 py-1.5 rounded-lg transition">
-              Re-check authentication
-            </button>
-          </form>
+          <ol class="mt-3 text-sm text-amber-200/80 list-decimal list-outside ml-5 space-y-1">
+            <li>Stop this app (<code class="bg-amber-950/60 px-1.5 py-0.5 rounded text-amber-100">Ctrl+C</code> in its terminal).</li>
+            <li>Run <code class="bg-amber-950/60 px-1.5 py-0.5 rounded text-amber-100">claude /login</code> and complete the sign-in.</li>
+            <li>Start the app again.</li>
+          </ol>
         </div>
       </div>
     </div>

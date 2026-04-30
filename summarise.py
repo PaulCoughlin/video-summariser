@@ -140,8 +140,9 @@ _AUTH_ERROR_HINTS = (
 )
 
 AUTH_INSTRUCTIONS = (
-    "Claude Code isn't signed in on this machine. Open a terminal, run "
-    "`claude` once, complete the sign-in, then try again."
+    "Claude Code isn't signed in on this machine. "
+    "Stop the app (Ctrl+C in its terminal), run `claude /login` and complete "
+    "the sign-in, then start the app again."
 )
 
 

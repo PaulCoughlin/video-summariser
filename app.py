@@ -60,16 +60,6 @@ async def healthz() -> JSONResponse:
     return JSONResponse({"claude_authenticated": _auth_state["ok"], "message": _auth_state["message"]})
 
 
-@app.post("/auth/refresh", response_class=HTMLResponse)
-async def refresh_auth(request: Request) -> HTMLResponse:
-    """Re-probe auth state. Lets the user click 'Re-check' after signing in
-    without having to restart the server."""
-    ok, message = await asyncio.to_thread(check_claude_auth)
-    _auth_state["ok"] = ok
-    _auth_state["message"] = message
-    return _render_index(request)
-
-
 @app.post("/summarise", response_class=HTMLResponse)
 async def summarise_endpoint(request: Request, url: str = Form(...)) -> HTMLResponse:
     try:
