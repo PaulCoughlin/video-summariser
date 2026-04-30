@@ -125,15 +125,33 @@ Then try a real video in the UI.
 
 YouTube's transcript endpoint blocks many datacenter IPs. Whether your VPS works is luck-of-the-draw — try a handful of videos first.
 
-If the page shows "YouTube blocked the transcript request from this server's IP":
+If the page shows "YouTube blocked the transcript request from this server's IP", you need a proxy. There are two env-var paths — pick whichever matches what your provider gave you:
 
-1. **Add a residential proxy** *(easiest)*. Sign up at [webshare.io](https://www.webshare.io/), pick the **Residential** plan (~$3/month), and grab your proxy username + password. In Coolify, add two env vars and redeploy:
-   - `WEBSHARE_PROXY_USERNAME` = (your Webshare username)
-   - `WEBSHARE_PROXY_PASSWORD` = (your Webshare password)
+### Option A: any proxy with a full URL *(recommended — works with anything)*
 
-   The code auto-detects these and routes transcript requests through the residential pool. No code change needed.
-2. **Try a different VPS region** in Hostinger's dashboard (free move within the first 30 days). Some IP ranges are less blocked than others — luck of the draw.
-3. **Use cookies** *(free but fragile)*. Log into YouTube in a browser, export the cookies for `youtube.com` to a file, mount it into the container, and modify [`summarise.py`](summarise.py) to pass it via `YouTubeTranscriptApi(http_client=...)`. Cookies expire — expect to refresh occasionally.
+Set **one** env var:
+
+```
+PROXY_URL=http://USERNAME:PASSWORD@1.2.3.4:8080
+```
+
+This is the most flexible: works with any provider, and using a literal IP avoids any DNS issues inside the container. Webshare's free plan gives you 10 datacenter proxies in `host:port:user:pass` format — pick one and plug it in here. (Note: free Webshare proxies are datacenter IPs, which YouTube also often blocks. Residential is the reliable choice.)
+
+### Option B: Webshare backbone gateway *(paid Residential plan)*
+
+If you have Webshare's paid Residential plan, set:
+
+```
+WEBSHARE_PROXY_USERNAME=...
+WEBSHARE_PROXY_PASSWORD=...
+```
+
+The code routes transcript fetches through `p.webshare.io` and Webshare picks a residential IP per request. **Heads-up**: this only works on the paid plan; free Webshare doesn't include backbone access. If `p.webshare.io` fails to resolve from your container (DNS quirk in some Docker networks), use Option A with a literal proxy IP instead.
+
+### Other approaches
+
+- **Try a different VPS region** in Hostinger's dashboard (free move within the first 30 days). Some IP ranges are less blocked — luck of the draw.
+- **Use cookies** *(free but fragile)*. Export YouTube cookies from a logged-in browser, mount the file into the container, modify [`summarise.py`](summarise.py) to pass it. Cookies expire — expect to refresh occasionally.
 
 ## Cost notes
 

@@ -26,7 +26,7 @@ from youtube_transcript_api._errors import (
     YouTubeRequestFailed,
     YouTubeTranscriptApiException,
 )
-from youtube_transcript_api.proxies import WebshareProxyConfig
+from youtube_transcript_api.proxies import GenericProxyConfig, WebshareProxyConfig
 
 OPENROUTER_BASE = "https://openrouter.ai/api/v1"
 OPENROUTER_TIMEOUT_SECONDS = 180
@@ -71,16 +71,30 @@ def extract_video_id(url: str) -> str:
 
 
 def _build_transcript_api() -> YouTubeTranscriptApi:
-    """Build a YouTubeTranscriptApi, optionally with a Webshare residential proxy.
+    """Build a YouTubeTranscriptApi, optionally with a proxy for YouTube transcript fetches.
 
     YouTube blocks most datacenter IPs, so on a VPS you'll usually need a
-    residential proxy. Set WEBSHARE_PROXY_USERNAME and WEBSHARE_PROXY_PASSWORD
-    (from https://www.webshare.io/) and the library will route through it.
+    proxy. Two ways to configure one (in priority order):
+
+    1. PROXY_URL — a full proxy URL like `http://user:pass@1.2.3.4:8080`.
+       Most flexible: works with any provider, and using a literal IP avoids
+       any DNS-resolution issues inside the container.
+    2. WEBSHARE_PROXY_USERNAME + WEBSHARE_PROXY_PASSWORD — uses Webshare's
+       backbone gateway (`p.webshare.io`). Requires a paid Webshare plan;
+       free Webshare gives you specific IPs that you'd plug into PROXY_URL
+       instead.
     """
+    proxy_url = os.environ.get("PROXY_URL", "").strip()
+    if proxy_url:
+        return YouTubeTranscriptApi(
+            proxy_config=GenericProxyConfig(http_url=proxy_url, https_url=proxy_url)
+        )
+
     user = os.environ.get("WEBSHARE_PROXY_USERNAME", "").strip()
     password = os.environ.get("WEBSHARE_PROXY_PASSWORD", "").strip()
     if user and password:
         return YouTubeTranscriptApi(proxy_config=WebshareProxyConfig(user, password))
+
     return YouTubeTranscriptApi()
 
 
