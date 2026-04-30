@@ -12,6 +12,10 @@ summary*.md
 summary*.log
 server.log
 
+# Secrets — never commit
+.env
+*/.env
+
 # IDE / editor
 .vscode/
 .idea/
