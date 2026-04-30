@@ -188,6 +188,47 @@ async def diag() -> JSONResponse:
     return JSONResponse({"dns": dns, "proxy": proxy_check, "resolv_conf": resolv})
 
 
+@app.get("/diag/proxy-test", response_class=JSONResponse)
+async def diag_proxy_test() -> JSONResponse:
+    """Hit several URLs through PROXY_URL using the same library
+    (requests) that youtube-transcript-api uses internally. Lets us isolate
+    whether failures are: the proxy itself, YouTube specifically, or our app.
+    """
+    import requests
+
+    proxy_url = os.environ.get("PROXY_URL", "").strip()
+    if not proxy_url:
+        return JSONResponse({"error": "PROXY_URL is not set."})
+
+    proxies = {"http": proxy_url, "https": proxy_url}
+    targets = [
+        "https://ipv4.webshare.io/",        # echoes the egress IP
+        "https://paulcoughlin.com/",         # neutral target
+        "https://www.google.com/",           # well-known
+        "https://www.youtube.com/",          # the real test
+        "https://www.youtube.com/watch?v=P60LqQg1RH8",
+    ]
+
+    def _hit(url: str) -> dict:
+        try:
+            r = requests.get(url, proxies=proxies, timeout=20, allow_redirects=False)
+            return {
+                "url": url,
+                "status": r.status_code,
+                "bytes": len(r.content),
+                "location": r.headers.get("location", "")[:120],
+                "snippet": r.text[:200] if r.text else "",
+            }
+        except Exception as e:
+            return {"url": url, "error": f"{type(e).__name__}: {e}"}
+
+    results = [_hit(u) for u in targets]
+    return JSONResponse({
+        "proxy_host": proxy_url.split("@")[-1] if "@" in proxy_url else proxy_url,
+        "results": results,
+    })
+
+
 @app.post("/summarise", response_class=HTMLResponse)
 async def summarise_endpoint(
     request: Request,
