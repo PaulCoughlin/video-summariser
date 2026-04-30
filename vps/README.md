@@ -125,28 +125,40 @@ Then try a real video in the UI.
 
 YouTube's transcript endpoint blocks many datacenter IPs. Whether your VPS works is luck-of-the-draw — try a handful of videos first.
 
-If the page shows "YouTube blocked the transcript request from this server's IP", you need a proxy. There are two env-var paths — pick whichever matches what your provider gave you:
+If the page shows "YouTube blocked the transcript request from this server's IP", you need a proxy. Three env-var paths, tried in priority order — pick whichever matches what your provider gave you:
 
-### Option A: any proxy with a full URL *(recommended — works with anything)*
+### Option A: multiple proxy IPs with fail-over *(recommended for Webshare free)*
 
-Set **one** env var:
+Free Webshare gives you 10 datacenter proxy IPs. Set the shared credentials once and list up to five hosts; the app tries each in order and moves to the next on connection errors or YouTube blocks:
+
+```
+PROXY_USERNAME=username-rotate         # or just `username` for static
+PROXY_PASSWORD=...
+PROXY_HOST_1=169.150.245.196           # bare IP, port defaults to 80
+PROXY_HOST_2=37.9.62.134               # or `IP:port` for a custom port
+PROXY_HOST_3=...
+PROXY_HOST_4=...
+PROXY_HOST_5=...
+```
+
+Why this works: free Webshare gives datacenter IPs, and YouTube's blocklist is partial — usually some of your 10 are blocked, some aren't. With fail-over the first request just walks down the list until one of them slips through.
+
+### Option B: single proxy URL
+
+If you have exactly one proxy:
 
 ```
 PROXY_URL=http://USERNAME:PASSWORD@1.2.3.4:8080
 ```
 
-This is the most flexible: works with any provider, and using a literal IP avoids any DNS issues inside the container. Webshare's free plan gives you 10 datacenter proxies in `host:port:user:pass` format — pick one and plug it in here. (Note: free Webshare proxies are datacenter IPs, which YouTube also often blocks. Residential is the reliable choice.)
-
-### Option B: Webshare backbone gateway *(paid Residential plan)*
-
-If you have Webshare's paid Residential plan, set:
+### Option C: Webshare backbone gateway *(paid Residential plan)*
 
 ```
 WEBSHARE_PROXY_USERNAME=...
 WEBSHARE_PROXY_PASSWORD=...
 ```
 
-The code routes transcript fetches through `p.webshare.io` and Webshare picks a residential IP per request. **Heads-up**: this only works on the paid plan; free Webshare doesn't include backbone access. If `p.webshare.io` fails to resolve from your container (DNS quirk in some Docker networks), use Option A with a literal proxy IP instead.
+The code routes through `p.webshare.io`. **Heads-up**: this only works on the paid plan; free Webshare doesn't include backbone access. Also, many Docker setups can't resolve `p.webshare.io` from inside the container — if `/diag` shows it failing DNS, you need Option A with literal IPs instead.
 
 ### Other approaches
 

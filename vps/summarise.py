@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 import re
+import sys
 from dataclasses import dataclass
 from urllib.parse import parse_qs, urlparse
 
@@ -70,39 +71,119 @@ def extract_video_id(url: str) -> str:
     return vid
 
 
-def _build_transcript_api() -> YouTubeTranscriptApi:
-    """Build a YouTubeTranscriptApi, optionally with a proxy for YouTube transcript fetches.
+def _proxy_candidates() -> list[str]:
+    """Build a prioritised list of proxy URLs from env vars.
 
-    YouTube blocks most datacenter IPs, so on a VPS you'll usually need a
-    proxy. Two ways to configure one (in priority order):
+    Priority order:
+    1. PROXY_USERNAME + PROXY_PASSWORD + PROXY_HOST_1..5 — multi-IP fallover.
+       Each PROXY_HOST_N may be a bare IP (port defaults to 80) or `IP:port`.
+       Only the hosts that are set are used; the app tries them in numeric
+       order and moves to the next on connection or block errors.
+    2. PROXY_URL — a single fully-formed `http://user:pass@host:port`.
+    3. WEBSHARE_PROXY_USERNAME + WEBSHARE_PROXY_PASSWORD — uses Webshare's
+       p.webshare.io backbone (requires the hostname to be resolvable from
+       the container; many Docker setups cannot resolve it).
 
-    1. PROXY_URL — a full proxy URL like `http://user:pass@1.2.3.4:8080`.
-       Most flexible: works with any provider, and using a literal IP avoids
-       any DNS-resolution issues inside the container.
-    2. WEBSHARE_PROXY_USERNAME + WEBSHARE_PROXY_PASSWORD — uses Webshare's
-       backbone gateway (`p.webshare.io`). Requires a paid Webshare plan;
-       free Webshare gives you specific IPs that you'd plug into PROXY_URL
-       instead.
+    Returns an empty list when no proxy is configured.
     """
-    proxy_url = os.environ.get("PROXY_URL", "").strip()
-    if proxy_url:
-        return YouTubeTranscriptApi(
-            proxy_config=GenericProxyConfig(http_url=proxy_url, https_url=proxy_url)
-        )
-
-    user = os.environ.get("WEBSHARE_PROXY_USERNAME", "").strip()
-    password = os.environ.get("WEBSHARE_PROXY_PASSWORD", "").strip()
+    user = os.environ.get("PROXY_USERNAME", "").strip()
+    password = os.environ.get("PROXY_PASSWORD", "").strip()
     if user and password:
-        return YouTubeTranscriptApi(proxy_config=WebshareProxyConfig(user, password))
+        urls: list[str] = []
+        for i in range(1, 6):
+            host = os.environ.get(f"PROXY_HOST_{i}", "").strip()
+            if not host:
+                continue
+            if ":" not in host:
+                host = f"{host}:80"
+            urls.append(f"http://{user}:{password}@{host}")
+        if urls:
+            return urls
 
-    return YouTubeTranscriptApi()
+    single = os.environ.get("PROXY_URL", "").strip()
+    if single:
+        return [single]
+
+    ws_user = os.environ.get("WEBSHARE_PROXY_USERNAME", "").strip()
+    ws_pwd = os.environ.get("WEBSHARE_PROXY_PASSWORD", "").strip()
+    if ws_user and ws_pwd:
+        # Use Webshare's library which targets p.webshare.io. Encoded as a
+        # sentinel string so the caller knows to use WebshareProxyConfig.
+        return [f"webshare://{ws_user}:{ws_pwd}"]
+
+    return []
+
+
+def _mask(proxy_url: str) -> str:
+    """Mask credentials in a proxy URL for safe logging."""
+    if "@" not in proxy_url:
+        return proxy_url
+    creds, host = proxy_url.split("@", 1)
+    scheme = ""
+    if "//" in creds:
+        scheme_part, creds = creds.split("//", 1)
+        scheme = scheme_part + "//"
+    user = creds.split(":", 1)[0]
+    return f"{scheme}{user}:***@{host}"
+
+
+def _build_api_for(candidate: str) -> YouTubeTranscriptApi:
+    if candidate.startswith("webshare://"):
+        # webshare://user:pass — extract and use Webshare's config helper.
+        rest = candidate[len("webshare://"):]
+        user, password = rest.split(":", 1)
+        return YouTubeTranscriptApi(proxy_config=WebshareProxyConfig(user, password))
+    return YouTubeTranscriptApi(
+        proxy_config=GenericProxyConfig(http_url=candidate, https_url=candidate)
+    )
+
+
+# Errors that should cause us to try the next proxy candidate. Anything not in
+# this list (TranscriptsDisabled, NoTranscriptFound, etc.) is a property of
+# the video, not the proxy, so trying another IP wouldn't help.
+def _is_retryable(exc: BaseException) -> bool:
+    if isinstance(exc, (RequestBlocked, IpBlocked)):
+        return True
+    # requests.exceptions.ProxyError, ConnectionError, Timeout — without
+    # importing requests just for the type check, fall back to name match.
+    name = type(exc).__name__
+    return name in {"ProxyError", "ConnectionError", "ConnectTimeout", "ReadTimeout", "SSLError"}
 
 
 def fetch_transcript(video_id: str) -> list[tuple[int, str]]:
-    fetched = _build_transcript_api().fetch(
-        video_id, languages=("en", "en-US", "en-GB")
-    )
-    return [(int(s.start), s.text.strip()) for s in fetched if s.text and s.text.strip()]
+    """Fetch a YouTube transcript, trying configured proxy candidates in order.
+
+    Returns segments as soon as any candidate succeeds. Re-raises the last
+    retryable error if every candidate fails; raises non-retryable errors
+    (e.g. TranscriptsDisabled) immediately so the caller can surface them.
+    """
+    candidates = _proxy_candidates()
+    if not candidates:
+        # No proxy configured — single attempt against the bare YouTube API.
+        fetched = YouTubeTranscriptApi().fetch(
+            video_id, languages=("en", "en-US", "en-GB")
+        )
+        return [(int(s.start), s.text.strip()) for s in fetched if s.text and s.text.strip()]
+
+    last_error: BaseException | None = None
+    for candidate in candidates:
+        print(f"[fetch_transcript] trying {_mask(candidate)}", file=sys.stderr, flush=True)
+        try:
+            fetched = _build_api_for(candidate).fetch(
+                video_id, languages=("en", "en-US", "en-GB")
+            )
+            print(f"[fetch_transcript] OK via {_mask(candidate)}", file=sys.stderr, flush=True)
+            return [(int(s.start), s.text.strip()) for s in fetched if s.text and s.text.strip()]
+        except Exception as e:
+            if _is_retryable(e):
+                print(f"[fetch_transcript] retryable {type(e).__name__}: trying next", file=sys.stderr, flush=True)
+                last_error = e
+                continue
+            raise  # non-retryable — let the caller map to a clean message
+
+    # Every candidate failed.
+    assert last_error is not None
+    raise last_error
 
 
 def format_timestamp(seconds: int) -> str:
