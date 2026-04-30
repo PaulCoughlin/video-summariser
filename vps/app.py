@@ -259,6 +259,127 @@ async def summarise_stream(
     return StreamingResponse(event_stream(), media_type="text/event-stream", headers=headers)
 
 
+@app.get("/diagnostics", response_class=HTMLResponse)
+async def diagnostics_page(request: Request) -> HTMLResponse:
+    return templates.TemplateResponse(request, "diag.html", {})
+
+
+@app.get("/diagnostics/stream")
+async def diagnostics_stream(request: Request) -> StreamingResponse:
+    """Streams a full proxy diagnostic run as SSE — one progress event per
+    test result so output appears live and Cloudflare/Coolify can't time it
+    out at the edge."""
+    queue: asyncio.Queue = asyncio.Queue()
+    loop = asyncio.get_running_loop()
+
+    def progress(msg: str) -> None:
+        loop.call_soon_threadsafe(queue.put_nowait, ("progress", msg))
+
+    def done() -> None:
+        loop.call_soon_threadsafe(queue.put_nowait, ("done", ""))
+
+    def worker() -> None:
+        import time
+        import requests
+        from summarise import _TimeoutSession
+        from youtube_transcript_api import YouTubeTranscriptApi
+
+        try:
+            user = os.environ.get("PROXY_USERNAME", "").strip()
+            password = os.environ.get("PROXY_PASSWORD", "").strip()
+            if not (user and password):
+                progress("PROXY_USERNAME / PROXY_PASSWORD not set — aborting")
+                return
+
+            hosts: list[tuple[int, str]] = []
+            for i in range(1, 6):
+                h = os.environ.get(f"PROXY_HOST_{i}", "").strip()
+                if not h:
+                    continue
+                if ":" not in h:
+                    h = f"{h}:80"
+                hosts.append((i, h))
+
+            if not hosts:
+                progress("no PROXY_HOST_* entries set — aborting")
+                return
+
+            progress(f"found {len(hosts)} proxy host(s); 3s timeout per request")
+            targets = [
+                "https://ipv4.webshare.io/",
+                "https://www.google.com/",
+                "https://www.youtube.com/",
+            ]
+            connect_timeout = 3.0
+            test_video = "P60LqQg1RH8"
+
+            for idx, host in hosts:
+                proxy_url = f"http://{user}:{password}@{host}"
+                progress(f"")
+                progress(f"=== PROXY_HOST_{idx} ({host}) ===")
+
+                for target in targets:
+                    t0 = time.monotonic()
+                    try:
+                        r = requests.get(
+                            target,
+                            proxies={"http": proxy_url, "https": proxy_url},
+                            timeout=connect_timeout,
+                            allow_redirects=False,
+                        )
+                        progress(
+                            f"  GET  {target} → {r.status_code} "
+                            f"({len(r.content)} bytes, {time.monotonic() - t0:.2f}s)"
+                        )
+                    except Exception as e:
+                        progress(
+                            f"  GET  {target} → {type(e).__name__} "
+                            f"({time.monotonic() - t0:.2f}s)"
+                        )
+
+                # The actual app code path: _TimeoutSession + YouTubeTranscriptApi.fetch
+                t0 = time.monotonic()
+                try:
+                    session = _TimeoutSession(
+                        timeout=(connect_timeout, 30), proxy_url=proxy_url
+                    )
+                    api = YouTubeTranscriptApi(http_client=session)
+                    fetched = api.fetch(test_video, languages=("en", "en-US", "en-GB"))
+                    segments = list(fetched)
+                    progress(
+                        f"  APP  transcript fetch ({test_video}) → {len(segments)} "
+                        f"segments ({time.monotonic() - t0:.2f}s)"
+                    )
+                except Exception as e:
+                    progress(
+                        f"  APP  transcript fetch ({test_video}) → "
+                        f"{type(e).__name__}: {str(e)[:120]} "
+                        f"({time.monotonic() - t0:.2f}s)"
+                    )
+
+            progress("")
+            progress("all hosts tested")
+        finally:
+            done()
+
+    asyncio.get_event_loop().run_in_executor(None, worker)
+
+    async def stream():
+        try:
+            yield _sse("progress", "starting")
+            while True:
+                kind, data = await queue.get()
+                if kind == "done":
+                    yield _sse("done", data)
+                    return
+                yield _sse("progress", data)
+        except asyncio.CancelledError:
+            pass
+
+    headers = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
+    return StreamingResponse(stream(), media_type="text/event-stream", headers=headers)
+
+
 @app.get("/diag", response_class=JSONResponse)
 async def diag() -> JSONResponse:
     """Container-side network diagnostic — DNS + proxy reachability.

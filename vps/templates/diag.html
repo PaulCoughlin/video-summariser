@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Diagnostics · Video Summariser</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          fontFamily: { sans: ['Inter', 'ui-sans-serif', 'system-ui'] },
+          colors: {
+            ink: { 950: '#0b0d12', 900: '#11141b', 800: '#1a1e29', 700: '#2a3142' },
+            accent: { DEFAULT: '#8b5cf6' },
+          },
+        },
+      },
+    };
+  </script>
+</head>
+<body class="min-h-screen bg-ink-950 text-slate-100 antialiased">
+  <main class="max-w-3xl mx-auto px-6 py-12">
+    <header class="mb-8">
+      <a href="/" class="text-sm text-slate-500 hover:text-slate-300">← back to summariser</a>
+      <h1 class="mt-3 text-3xl font-bold tracking-tight">Proxy Diagnostics</h1>
+      <p class="mt-2 text-slate-400 text-sm leading-relaxed">
+        Reads PROXY_USERNAME / PROXY_PASSWORD / PROXY_HOST_1..5 from the running container,
+        then for each IP runs four tests with a tight 3-second timeout — three plain
+        GET requests through the proxy (Webshare echo, Google, YouTube) and one full
+        <code class="text-slate-300">YouTubeTranscriptApi.fetch()</code> call using
+        the exact session class the summariser uses. Results stream live below.
+      </p>
+    </header>
+
+    <button
+      id="run"
+      class="bg-accent hover:bg-violet-600 text-white font-medium px-5 py-2.5 rounded-xl transition shadow-lg shadow-accent/25"
+    >
+      Run diagnostics
+    </button>
+
+    <section id="log-area" class="mt-8"></section>
+
+    <template id="log-template">
+      <div class="bg-ink-900/60 backdrop-blur border border-ink-700 rounded-2xl p-5 shadow-2xl shadow-black/40">
+        <div class="flex items-center gap-3 mb-3">
+          <svg data-spinner class="animate-spin h-4 w-4 text-accent shrink-0" fill="none" viewBox="0 0 24 24">
+            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="3"></circle>
+            <path class="opacity-90" fill="currentColor" d="M4 12a8 8 0 018-8v3a5 5 0 00-5 5H4z"></path>
+          </svg>
+          <span data-status class="text-sm text-slate-300">Running diagnostics…</span>
+        </div>
+        <pre data-log class="text-xs font-mono text-slate-400 bg-ink-950/60 border border-ink-800 rounded-lg p-3 whitespace-pre-wrap leading-relaxed"></pre>
+      </div>
+    </template>
+  </main>
+
+  <script>
+    document.getElementById('run').addEventListener('click', () => {
+      const area = document.getElementById('log-area');
+      area.innerHTML = '';
+      const card = document.getElementById('log-template').content.firstElementChild.cloneNode(true);
+      area.appendChild(card);
+      const log = card.querySelector('[data-log]');
+      const status = card.querySelector('[data-status]');
+      const spinner = card.querySelector('[data-spinner]');
+
+      const append = (line) => {
+        const t = new Date().toLocaleTimeString([], { hour12: false });
+        log.textContent += `[${t}] ${line}\n`;
+      };
+
+      const es = new EventSource('/diagnostics/stream');
+      es.addEventListener('progress', (ev) => append(ev.data));
+      es.addEventListener('done', () => {
+        es.close();
+        spinner.classList.remove('animate-spin');
+        status.textContent = 'Done';
+      });
+      es.addEventListener('error', (ev) => {
+        es.close();
+        spinner.classList.remove('animate-spin');
+        const msg = ev.data && ev.data.length ? ev.data : 'Stream disconnected.';
+        status.textContent = msg;
+        status.classList.remove('text-slate-300');
+        status.classList.add('text-red-300');
+      });
+    });
+  </script>
+</body>
+</html>
