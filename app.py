@@ -7,6 +7,7 @@ Then: http://127.0.0.1:8000
 from __future__ import annotations
 
 import asyncio
+import re
 from pathlib import Path
 
 import markdown as md
@@ -85,6 +86,13 @@ async def summarise_endpoint(request: Request, url: str = Form(...)) -> HTMLResp
         )
 
     body_html = md.markdown(result.body_markdown, extensions=["extra", "sane_lists"])
+    # All summary links are external (YouTube deep-links) — open in a new tab.
+    # Negative lookahead skips any <a> that already has target= (defensive).
+    body_html = re.sub(
+        r'<a (?![^>]*\btarget=)',
+        '<a target="_blank" rel="noopener noreferrer" ',
+        body_html,
+    )
     return templates.TemplateResponse(
         request,
         "summary.html",
