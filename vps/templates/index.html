@@ -121,7 +121,7 @@
           </svg>
           <span class="text-sm text-slate-300">Working on it — typically 30–90s for long videos.</span>
         </div>
-        <pre data-progress-log class="text-xs font-mono text-slate-400 bg-ink-950/60 border border-ink-800 rounded-lg p-3 max-h-48 overflow-y-auto whitespace-pre-wrap leading-relaxed"></pre>
+        <pre data-progress-log class="text-xs font-mono text-slate-400 bg-ink-950/60 border border-ink-800 rounded-lg p-3 whitespace-pre-wrap leading-relaxed"></pre>
       </div>
     </template>
 
@@ -176,7 +176,6 @@
         const appendLog = (line) => {
           const time = new Date().toLocaleTimeString([], { hour12: false });
           log.textContent += `[${time}] ${line}\n`;
-          log.scrollTop = log.scrollHeight;
         };
 
         if (activeSource) activeSource.close();
@@ -210,8 +209,13 @@
             ? ev.data
             : 'Lost connection to the server before the summary was ready.';
           wrapper.querySelector('p.text-sm').textContent = msg;
-          result.innerHTML = '';
-          result.appendChild(wrapper.firstElementChild);
+          const errorCard = wrapper.firstElementChild;
+          errorCard.classList.add('mb-4');
+          // Stop the spinner inside the progress card but keep the log visible
+          // so the user can see what happened. Prepend the error above it.
+          const spinner = card.querySelector('svg.animate-spin');
+          if (spinner) spinner.classList.remove('animate-spin');
+          result.insertBefore(errorCard, result.firstChild);
           es.close();
           controls.forEach((c) => (c.disabled = false));
         });
