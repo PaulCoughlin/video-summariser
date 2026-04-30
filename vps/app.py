@@ -318,64 +318,79 @@ async def diag() -> JSONResponse:
 
 @app.get("/diag/proxy-test", response_class=JSONResponse)
 async def diag_proxy_test() -> JSONResponse:
-    """Test the configured proxy against several proxy HOSTS (the hostname
-    plus a couple of literal IPs) and several target URLs, using requests —
-    the same library youtube-transcript-api uses internally.
+    """Test each PROXY_HOST_N from the live config against two targets,
+    once with a lenient 20s timeout (matches our earlier-successful tests)
+    and once with the app's PROXY_CONNECT_TIMEOUT / PROXY_READ_TIMEOUT
+    (which is what fetch_transcript actually uses).
 
-    Lets us isolate whether the failure is DNS for the proxy host, the
-    proxy itself, the targets (YouTube specifically), or our app's wrapping.
+    Reading the same env vars as the app means we're testing exactly what
+    the app sees — no chance of drift between the diagnostic and reality.
     """
+    import time
     import requests
-    from urllib.parse import urlparse
 
-    proxy_url = os.environ.get("PROXY_URL", "").strip()
-    if not proxy_url:
-        return JSONResponse({"error": "PROXY_URL is not set."})
+    user = os.environ.get("PROXY_USERNAME", "").strip()
+    password = os.environ.get("PROXY_PASSWORD", "").strip()
+    if not (user and password):
+        return JSONResponse({"error": "PROXY_USERNAME / PROXY_PASSWORD not set."})
 
-    parsed = urlparse(proxy_url)
-    auth = f"{parsed.username}:{parsed.password}" if parsed.username else ""
-    if not auth:
-        return JSONResponse({"error": "PROXY_URL is missing user:pass."})
+    hosts: list[tuple[int, str]] = []
+    for i in range(1, 6):
+        h = os.environ.get(f"PROXY_HOST_{i}", "").strip()
+        if not h:
+            continue
+        if ":" not in h:
+            h = f"{h}:80"
+        hosts.append((i, h))
+    if not hosts:
+        return JSONResponse({"error": "No PROXY_HOST_* entries set."})
 
-    proxy_hosts = [
-        "p.webshare.io:80",        # the canonical hostname (DNS-dependent)
-        "169.150.245.196:80",       # literal IP 1
-        "37.9.62.134:80",           # literal IP 2
-    ]
-    targets = [
-        "https://ipv4.webshare.io/",        # echoes the egress IP
-        "https://paulcoughlin.com/",         # neutral target
-        "https://www.google.com/",           # well-known
-        "https://www.youtube.com/",          # the real test
-        "https://www.youtube.com/watch?v=P60LqQg1RH8",
-    ]
+    targets = ["https://ipv4.webshare.io/", "https://www.youtube.com/"]
 
-    def _hit(proxy: str, url: str) -> dict:
+    app_connect = float(os.environ.get("PROXY_CONNECT_TIMEOUT", "2"))
+    app_read = float(os.environ.get("PROXY_READ_TIMEOUT", "30"))
+
+    def _hit(proxy_url: str, target: str, timeout) -> dict:
+        t0 = time.monotonic()
         try:
             r = requests.get(
-                url,
-                proxies={"http": proxy, "https": proxy},
-                timeout=20,
+                target,
+                proxies={"http": proxy_url, "https": proxy_url},
+                timeout=timeout,
                 allow_redirects=False,
             )
             return {
-                "target": url,
                 "status": r.status_code,
                 "bytes": len(r.content),
-                "snippet": r.text[:160] if r.text else "",
+                "elapsed_s": round(time.monotonic() - t0, 2),
             }
         except Exception as e:
-            return {"target": url, "error": f"{type(e).__name__}: {str(e)[:200]}"}
+            return {
+                "elapsed_s": round(time.monotonic() - t0, 2),
+                "error": f"{type(e).__name__}: {str(e)[:200]}",
+            }
 
-    out = []
-    for host in proxy_hosts:
-        proxy = f"http://{auth}@{host}"
-        out.append({
-            "proxy_host": host,
-            "results": [_hit(proxy, u) for u in targets],
-        })
+    out: list[dict] = []
+    for idx, host in hosts:
+        proxy_url = f"http://{user}:{password}@{host}"
+        modes = {
+            "lenient_20s": 20,
+            f"app_{int(app_connect)}s_connect": (app_connect, app_read),
+        }
+        per_target: list[dict] = []
+        for target in targets:
+            row: dict = {"target": target}
+            for mode_name, t in modes.items():
+                row[mode_name] = _hit(proxy_url, target, t)
+            per_target.append(row)
+        out.append({"slot": f"PROXY_HOST_{idx}", "host": host, "results": per_target})
 
-    return JSONResponse({"tests": out})
+    return JSONResponse({
+        "proxy_user_set": bool(user),
+        "host_count": len(hosts),
+        "app_timeout": {"connect_s": app_connect, "read_s": app_read},
+        "tests": out,
+    })
 
 
 @app.post("/summarise", response_class=HTMLResponse)
