@@ -318,16 +318,27 @@ async def diag() -> JSONResponse:
 
 @app.get("/diag/proxy-test", response_class=JSONResponse)
 async def diag_proxy_test() -> JSONResponse:
-    """Test each PROXY_HOST_N from the live config against two targets,
-    once with a lenient 20s timeout (matches our earlier-successful tests)
-    and once with the app's PROXY_CONNECT_TIMEOUT / PROXY_READ_TIMEOUT
-    (which is what fetch_transcript actually uses).
+    """Reads the same env vars the app uses (PROXY_USERNAME / PROXY_PASSWORD /
+    PROXY_HOST_1..5) and, for each IP, runs side-by-side:
 
-    Reading the same env vars as the app means we're testing exactly what
-    the app sees — no chance of drift between the diagnostic and reality.
+    METHOD 1: plain `requests.get(url, proxies=..., timeout=20)` — exactly
+              the connection style we manually verified worked earlier.
+
+    METHOD 2: the *actual* path the app uses — `_TimeoutSession` wrapping
+              `requests.Session`, fed to `YouTubeTranscriptApi(http_client=…)`,
+              followed by `.fetch(video_id)`. Lenient timeout so the test
+              can't time out spuriously; we just want to know if the call
+              completes and returns transcript segments.
+
+    If METHOD 1 succeeds but METHOD 2 fails on the same IP, the issue is in
+    the session wrapping or youtube-transcript-api's request shape — not
+    the proxy itself.
     """
     import time
     import requests
+
+    from summarise import _TimeoutSession
+    from youtube_transcript_api import YouTubeTranscriptApi
 
     user = os.environ.get("PROXY_USERNAME", "").strip()
     password = os.environ.get("PROXY_PASSWORD", "").strip()
@@ -346,49 +357,54 @@ async def diag_proxy_test() -> JSONResponse:
         return JSONResponse({"error": "No PROXY_HOST_* entries set."})
 
     targets = ["https://ipv4.webshare.io/", "https://www.youtube.com/"]
+    test_video = "P60LqQg1RH8"  # known-good public video with captions
 
-    app_connect = float(os.environ.get("PROXY_CONNECT_TIMEOUT", "2"))
-    app_read = float(os.environ.get("PROXY_READ_TIMEOUT", "30"))
-
-    def _hit(proxy_url: str, target: str, timeout) -> dict:
+    def _method1_plain(proxy_url: str, target: str) -> dict:
+        """Plain requests.get — the call shape that worked in manual tests."""
         t0 = time.monotonic()
         try:
             r = requests.get(
                 target,
                 proxies={"http": proxy_url, "https": proxy_url},
-                timeout=timeout,
+                timeout=20,
                 allow_redirects=False,
             )
-            return {
-                "status": r.status_code,
-                "bytes": len(r.content),
-                "elapsed_s": round(time.monotonic() - t0, 2),
-            }
+            return {"status": r.status_code, "bytes": len(r.content),
+                    "elapsed_s": round(time.monotonic() - t0, 2)}
         except Exception as e:
-            return {
-                "elapsed_s": round(time.monotonic() - t0, 2),
-                "error": f"{type(e).__name__}: {str(e)[:200]}",
-            }
+            return {"elapsed_s": round(time.monotonic() - t0, 2),
+                    "error": f"{type(e).__name__}: {str(e)[:200]}"}
+
+    def _method2_app_transcript(proxy_url: str) -> dict:
+        """Exact path the app uses: _TimeoutSession → YouTubeTranscriptApi.fetch."""
+        t0 = time.monotonic()
+        try:
+            session = _TimeoutSession(timeout=(20, 60), proxy_url=proxy_url)
+            api = YouTubeTranscriptApi(http_client=session)
+            fetched = api.fetch(test_video, languages=("en", "en-US", "en-GB"))
+            segments = list(fetched)
+            return {"status": "OK", "segments": len(segments),
+                    "elapsed_s": round(time.monotonic() - t0, 2)}
+        except Exception as e:
+            return {"elapsed_s": round(time.monotonic() - t0, 2),
+                    "error": f"{type(e).__name__}: {str(e)[:200]}"}
 
     out: list[dict] = []
     for idx, host in hosts:
         proxy_url = f"http://{user}:{password}@{host}"
-        modes = {
-            "lenient_20s": 20,
-            f"app_{int(app_connect)}s_connect": (app_connect, app_read),
-        }
-        per_target: list[dict] = []
-        for target in targets:
-            row: dict = {"target": target}
-            for mode_name, t in modes.items():
-                row[mode_name] = _hit(proxy_url, target, t)
-            per_target.append(row)
-        out.append({"slot": f"PROXY_HOST_{idx}", "host": host, "results": per_target})
+        method1 = {target: _method1_plain(proxy_url, target) for target in targets}
+        method2 = _method2_app_transcript(proxy_url)
+        out.append({
+            "slot": f"PROXY_HOST_{idx}",
+            "host": host,
+            "method1_plain_get": method1,
+            "method2_app_transcript_fetch": method2,
+        })
 
     return JSONResponse({
         "proxy_user_set": bool(user),
         "host_count": len(hosts),
-        "app_timeout": {"connect_s": app_connect, "read_s": app_read},
+        "test_video": test_video,
         "tests": out,
     })
 
