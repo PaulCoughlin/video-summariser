@@ -264,7 +264,7 @@ def _cli_spinner(label: str):
         while not stop.is_set():
             frame = _SPINNER_FRAMES[i % len(_SPINNER_FRAMES)]
             elapsed = time.monotonic() - start
-            sys.stderr.write(f"\r      {frame} {label} ({elapsed:.0f}s)   ")
+            sys.stderr.write(f"\r      {label} {frame} ({elapsed:.0f}s)   ")
             sys.stderr.flush()
             stop.wait(0.1)
             i += 1
@@ -329,7 +329,7 @@ def main() -> None:
 
     print(f"[2/3] summarising with Claude (typically 30-90s for long videos)...", file=sys.stderr)
     try:
-        with _cli_spinner("waiting for Claude"):
+        with _cli_spinner("Claude is working.."):
             body = run_claude(prompt)
     except SummariseError as e:
         sys.exit(f"error: {e}")
