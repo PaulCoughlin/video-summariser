@@ -281,8 +281,50 @@ async def diagnostics_stream(request: Request) -> StreamingResponse:
     def worker() -> None:
         import time
         import requests
-        from summarise import _TimeoutSession
         from youtube_transcript_api import YouTubeTranscriptApi
+
+        class LoggingSession(requests.Session):
+            """A real requests.Session that streams every HTTP request and
+            response to `progress(...)`. Used in the APP transcript fetch
+            test so we can see exactly what YouTube returns to the
+            youtube-transcript-api library, not just the wrapped exception.
+            """
+            def __init__(self, default_timeout=None, proxy_url=None):
+                super().__init__()
+                self._default_timeout = default_timeout
+                if proxy_url:
+                    self.proxies = {"http": proxy_url, "https": proxy_url}
+
+            def request(self, method, url, **kwargs):
+                if self._default_timeout and "timeout" not in kwargs:
+                    kwargs["timeout"] = self._default_timeout
+                short_url = url if len(url) <= 90 else url[:90] + "…"
+                t0 = time.monotonic()
+                try:
+                    r = super().request(method, url, **kwargs)
+                except Exception as e:
+                    progress(
+                        f"    HTTP {method} {short_url} → {type(e).__name__} "
+                        f"({time.monotonic() - t0:.2f}s)"
+                    )
+                    raise
+                # Always show status + size; on failures or JSON, dump a body snippet.
+                ctype = r.headers.get("content-type", "")
+                tail = ""
+                show_body = (
+                    r.status_code >= 400
+                    or "json" in ctype.lower()
+                    or '"playabilityStatus"' in r.text[:1000]
+                    or '"errorScreen"' in r.text[:1000]
+                )
+                if show_body:
+                    body = r.text[:400].replace("\n", " ").replace("\r", "")
+                    tail = f" | body: {body}"
+                progress(
+                    f"    HTTP {method} {short_url} → {r.status_code} "
+                    f"({len(r.content)}b, {time.monotonic() - t0:.2f}s){tail}"
+                )
+                return r
 
         try:
             user = os.environ.get("PROXY_USERNAME", "").strip()
@@ -337,23 +379,24 @@ async def diagnostics_stream(request: Request) -> StreamingResponse:
                             f"({time.monotonic() - t0:.2f}s)"
                         )
 
-                # The actual app code path: _TimeoutSession + YouTubeTranscriptApi.fetch
+                # The actual app code path, but with a logging Session in front
+                # so every YouTube request/response shows up in the log.
+                progress(f"  APP  transcript fetch ({test_video})")
                 t0 = time.monotonic()
                 try:
-                    session = _TimeoutSession(
-                        timeout=(connect_timeout, 30), proxy_url=proxy_url
+                    session = LoggingSession(
+                        default_timeout=(connect_timeout, 30), proxy_url=proxy_url
                     )
                     api = YouTubeTranscriptApi(http_client=session)
                     fetched = api.fetch(test_video, languages=("en", "en-US", "en-GB"))
                     segments = list(fetched)
                     progress(
-                        f"  APP  transcript fetch ({test_video}) → {len(segments)} "
-                        f"segments ({time.monotonic() - t0:.2f}s)"
+                        f"    → {len(segments)} segments ({time.monotonic() - t0:.2f}s)"
                     )
                 except Exception as e:
+                    msg = str(e).replace("\n", " ")[:500]
                     progress(
-                        f"  APP  transcript fetch ({test_video}) → "
-                        f"{type(e).__name__}: {str(e)[:120]} "
+                        f"    → {type(e).__name__}: {msg} "
                         f"({time.monotonic() - t0:.2f}s)"
                     )
 
