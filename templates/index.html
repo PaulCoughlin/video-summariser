@@ -77,6 +77,7 @@
       hx-swap="innerHTML"
       hx-indicator="#loading"
       hx-disabled-elt="find button, find input"
+      hx-on::before-request="document.getElementById('result').innerHTML = ''"
       class="bg-ink-900/60 backdrop-blur border border-ink-700 rounded-2xl p-4 sm:p-5 shadow-2xl shadow-black/40 {% if not auth_ok %}opacity-60 pointer-events-none{% endif %}"
     >
       <div class="flex flex-col sm:flex-row gap-3">
