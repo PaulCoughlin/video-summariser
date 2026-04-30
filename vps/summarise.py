@@ -427,6 +427,18 @@ def summarise_url(
         raise SummariseError(f"YouTube returned an unexpected response: {e}")
     except YouTubeTranscriptApiException as e:
         raise SummariseError(f"Transcript fetch failed: {type(e).__name__}: {e}")
+    except Exception as e:
+        # fetch_transcript exhausted every proxy candidate with retryable
+        # errors (connection timeouts, proxy auth failures, etc.) and
+        # re-raised the last one. Map to a clean, actionable message.
+        if _is_retryable(e):
+            raise SummariseError(
+                "Couldn't reach YouTube through any configured proxy — every IP "
+                "either timed out or was blocked. Try replacing the PROXY_HOST_* "
+                "entries with fresh IPs from your Webshare dashboard, or upgrade "
+                "to a residential plan."
+            )
+        raise
 
     if not segments:
         raise SummariseError("Transcript was empty.")
