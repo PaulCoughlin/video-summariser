@@ -131,6 +131,63 @@ async def healthz() -> JSONResponse:
     })
 
 
+@app.get("/diag", response_class=JSONResponse)
+async def diag() -> JSONResponse:
+    """Container-side network diagnostic — DNS + proxy reachability.
+
+    Useful when YouTube transcript fetches fail with cryptic errors and we
+    need to know whether DNS or the proxy itself is the problem. Exposed
+    publicly because it doesn't reveal anything sensitive (proxy URL is
+    masked).
+    """
+    import socket
+    from urllib.parse import urlparse
+
+    def _resolve(host: str) -> dict:
+        try:
+            return {"host": host, "ok": True, "ipv4": socket.gethostbyname(host)}
+        except Exception as e:
+            return {"host": host, "ok": False, "error": f"{type(e).__name__}: {e}"}
+
+    hosts = ["openrouter.ai", "www.youtube.com", "p.webshare.io",
+             "proxy.webshare.io", "ipv4.webshare.io"]
+    dns = [_resolve(h) for h in hosts]
+
+    proxy_url = os.environ.get("PROXY_URL", "").strip()
+    proxy_check: dict = {"configured": bool(proxy_url)}
+    if proxy_url:
+        try:
+            parsed = urlparse(proxy_url)
+            proxy_check["host"] = parsed.hostname
+            proxy_check["port"] = parsed.port
+            # Try resolving the proxy host
+            proxy_check["proxy_host_resolves"] = _resolve(parsed.hostname or "")
+            # Try a HEAD request through the proxy to a Webshare echo endpoint
+            import httpx
+            try:
+                r = httpx.get(
+                    "https://ipv4.webshare.io/",
+                    proxy=proxy_url,
+                    timeout=15,
+                )
+                proxy_check["echo_status"] = r.status_code
+                proxy_check["echo_body"] = r.text.strip()[:120]
+            except Exception as e:
+                proxy_check["echo_error"] = f"{type(e).__name__}: {e}"
+        except Exception as e:
+            proxy_check["parse_error"] = f"{type(e).__name__}: {e}"
+
+    # /etc/resolv.conf to see what DNS server the container is using
+    resolv = ""
+    try:
+        with open("/etc/resolv.conf") as f:
+            resolv = f.read()
+    except Exception as e:
+        resolv = f"(couldn't read: {e})"
+
+    return JSONResponse({"dns": dns, "proxy": proxy_check, "resolv_conf": resolv})
+
+
 @app.post("/summarise", response_class=HTMLResponse)
 async def summarise_endpoint(
     request: Request,
