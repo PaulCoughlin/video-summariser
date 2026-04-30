@@ -10,6 +10,7 @@ from __future__ import annotations
 import os
 import re
 import sys
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from urllib.parse import parse_qs, urlparse
@@ -128,15 +129,57 @@ def _mask(proxy_url: str) -> str:
     return f"{scheme}{user}:***@{host}"
 
 
+# Per-HTTP-request timeouts: (connect, read). A dead/blocked proxy IP that
+# accepts no TCP at all will fail in PROXY_CONNECT_TIMEOUT seconds rather
+# than waiting for the OS-default ~30-60s, so multi-candidate fail-over
+# stays snappy.
+PROXY_CONNECT_TIMEOUT = float(os.environ.get("PROXY_CONNECT_TIMEOUT", "2"))
+PROXY_READ_TIMEOUT = float(os.environ.get("PROXY_READ_TIMEOUT", "30"))
+
+
+class _TimeoutSession:
+    """A minimal `requests.Session` wrapper that injects a default timeout
+    on every request. youtube-transcript-api accepts any object with a
+    Session-shaped API via its `http_client` parameter.
+    """
+    def __init__(self, timeout: tuple[float, float], proxy_url: str | None = None):
+        import requests
+        self._inner = requests.Session()
+        self._timeout = timeout
+        if proxy_url:
+            self._inner.proxies = {"http": proxy_url, "https": proxy_url}
+
+    def __getattr__(self, name):  # delegate everything else to the real Session
+        return getattr(self._inner, name)
+
+    def request(self, method, url, **kwargs):
+        kwargs.setdefault("timeout", self._timeout)
+        return self._inner.request(method, url, **kwargs)
+
+    def get(self, url, **kwargs):
+        kwargs.setdefault("timeout", self._timeout)
+        return self._inner.get(url, **kwargs)
+
+    def post(self, url, **kwargs):
+        kwargs.setdefault("timeout", self._timeout)
+        return self._inner.post(url, **kwargs)
+
+
 def _build_api_for(candidate: str) -> YouTubeTranscriptApi:
     if candidate.startswith("webshare://"):
-        # webshare://user:pass — extract and use Webshare's config helper.
+        # Backbone path: leave WebshareProxyConfig in charge (no per-request
+        # timeout knob, but this path requires p.webshare.io to resolve which
+        # already disqualifies most Docker setups).
         rest = candidate[len("webshare://"):]
         user, password = rest.split(":", 1)
         return YouTubeTranscriptApi(proxy_config=WebshareProxyConfig(user, password))
-    return YouTubeTranscriptApi(
-        proxy_config=GenericProxyConfig(http_url=candidate, https_url=candidate)
+
+    # GenericProxy path: build a Session manually so we can attach a timeout.
+    session = _TimeoutSession(
+        timeout=(PROXY_CONNECT_TIMEOUT, PROXY_READ_TIMEOUT),
+        proxy_url=candidate,
     )
+    return YouTubeTranscriptApi(http_client=session)
 
 
 # Errors that should cause us to try the next proxy candidate. Anything not in
@@ -175,17 +218,20 @@ def fetch_transcript(
         masked = _mask(candidate)
         progress(f"trying proxy {i}/{len(candidates)}: {masked}")
         print(f"[fetch_transcript] trying {masked}", file=sys.stderr, flush=True)
+        start = time.monotonic()
         try:
             fetched = _build_api_for(candidate).fetch(
                 video_id, languages=("en", "en-US", "en-GB")
             )
-            progress(f"got transcript via proxy {i} ({masked})")
-            print(f"[fetch_transcript] OK via {masked}", file=sys.stderr, flush=True)
+            elapsed = time.monotonic() - start
+            progress(f"got transcript via proxy {i} in {elapsed:.1f}s")
+            print(f"[fetch_transcript] OK via {masked} ({elapsed:.1f}s)", file=sys.stderr, flush=True)
             return [(int(s.start), s.text.strip()) for s in fetched if s.text and s.text.strip()]
         except Exception as e:
+            elapsed = time.monotonic() - start
             if _is_retryable(e):
-                progress(f"proxy {i} blocked or unreachable ({type(e).__name__}) — trying next")
-                print(f"[fetch_transcript] retryable {type(e).__name__}: trying next", file=sys.stderr, flush=True)
+                progress(f"proxy {i} failed after {elapsed:.1f}s ({type(e).__name__}) — trying next")
+                print(f"[fetch_transcript] retryable {type(e).__name__} ({elapsed:.1f}s): trying next", file=sys.stderr, flush=True)
                 last_error = e
                 continue
             raise
