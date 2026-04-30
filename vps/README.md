@@ -1,4 +1,4 @@
-# video-summariser — VPS edition
+# Video Summariser — VPS edition - this is just for my own experiment..
 
 The same web UI as the root project, but it calls **OpenRouter** instead of the local Claude Code CLI — so it runs headless on a VPS or any container platform with just an API key.
 
@@ -52,7 +52,7 @@ Why this combo: Hostinger gives you a Linux VPS for ~$5–8/month, Coolify gives
 
 In Hostinger:
 
-1. **Hosting → VPS → Get Plan.** A KVM 2 (2 vCPU, 8 GB RAM, ~$8/month) is more than enough; KVM 1 works if you're tight.
+1. **Hosting → VPS → Get Plan.** A KVM 2 (2 vCPU, 8 GB RAM, ~$8/month) is more than enough; KVM 1 works if you're tight. [Click here for 20% discount (my affiliate link)](https://www.hostinger.com/cart?product=vps%3Avps_kvm_2&period=12&referral_type=cart_link&REFERRALCODE=IYWZPAUL29MC&referral_id=019dddb9-d104-7097-8e29-5e8051f32a1c)
 2. **Choose the OS template: Ubuntu 24.04 with Coolify** (Hostinger has a one-click image). If you don't see it, pick plain Ubuntu 24.04 and install Coolify manually in step 2.
 3. Set a root password / add your SSH key.
 4. Wait ~2 minutes for provisioning. Note the public IP.
@@ -125,11 +125,15 @@ Then try a real video in the UI.
 
 YouTube's transcript endpoint blocks many datacenter IPs. Whether your VPS works is luck-of-the-draw — try a handful of videos first.
 
-If `youtube-transcript-api` errors with `IpBlocked` / `RequestBlocked`:
+If the page shows "YouTube blocked the transcript request from this server's IP":
 
-1. **Try a different VPS region** in Hostinger's dashboard (free move within the first 30 days).
-2. **Add a residential proxy.** Webshare ([webshare.io](https://www.webshare.io/)) is the cheapest option (~$3/month for 100 MB, plenty for this use case). Pass it via env var — `youtube-transcript-api` accepts a `ProxyConfig` object; you'd add it in [`summarise.py`](summarise.py) at the `YouTubeTranscriptApi()` instantiation.
-3. **Use cookies.** Log into YouTube in a browser, export the cookies for `youtube.com` to a file, mount it into the container, and pass it to the library. Less reliable than a proxy but free.
+1. **Add a residential proxy** *(easiest)*. Sign up at [webshare.io](https://www.webshare.io/), pick the **Residential** plan (~$3/month), and grab your proxy username + password. In Coolify, add two env vars and redeploy:
+   - `WEBSHARE_PROXY_USERNAME` = (your Webshare username)
+   - `WEBSHARE_PROXY_PASSWORD` = (your Webshare password)
+
+   The code auto-detects these and routes transcript requests through the residential pool. No code change needed.
+2. **Try a different VPS region** in Hostinger's dashboard (free move within the first 30 days). Some IP ranges are less blocked than others — luck of the draw.
+3. **Use cookies** *(free but fragile)*. Log into YouTube in a browser, export the cookies for `youtube.com` to a file, mount it into the container, and modify [`summarise.py`](summarise.py) to pass it via `YouTubeTranscriptApi(http_client=...)`. Cookies expire — expect to refresh occasionally.
 
 ## Cost notes
 

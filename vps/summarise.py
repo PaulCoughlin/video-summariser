@@ -15,10 +15,18 @@ from urllib.parse import parse_qs, urlparse
 import httpx
 from youtube_transcript_api import YouTubeTranscriptApi
 from youtube_transcript_api._errors import (
+    AgeRestricted,
+    IpBlocked,
     NoTranscriptFound,
+    PoTokenRequired,
+    RequestBlocked,
     TranscriptsDisabled,
     VideoUnavailable,
+    YouTubeDataUnparsable,
+    YouTubeRequestFailed,
+    YouTubeTranscriptApiException,
 )
+from youtube_transcript_api.proxies import WebshareProxyConfig
 
 OPENROUTER_BASE = "https://openrouter.ai/api/v1"
 OPENROUTER_TIMEOUT_SECONDS = 180
@@ -62,8 +70,24 @@ def extract_video_id(url: str) -> str:
     return vid
 
 
+def _build_transcript_api() -> YouTubeTranscriptApi:
+    """Build a YouTubeTranscriptApi, optionally with a Webshare residential proxy.
+
+    YouTube blocks most datacenter IPs, so on a VPS you'll usually need a
+    residential proxy. Set WEBSHARE_PROXY_USERNAME and WEBSHARE_PROXY_PASSWORD
+    (from https://www.webshare.io/) and the library will route through it.
+    """
+    user = os.environ.get("WEBSHARE_PROXY_USERNAME", "").strip()
+    password = os.environ.get("WEBSHARE_PROXY_PASSWORD", "").strip()
+    if user and password:
+        return YouTubeTranscriptApi(proxy_config=WebshareProxyConfig(user, password))
+    return YouTubeTranscriptApi()
+
+
 def fetch_transcript(video_id: str) -> list[tuple[int, str]]:
-    fetched = YouTubeTranscriptApi().fetch(video_id, languages=("en", "en-US", "en-GB"))
+    fetched = _build_transcript_api().fetch(
+        video_id, languages=("en", "en-US", "en-GB")
+    )
     return [(int(s.start), s.text.strip()) for s in fetched if s.text and s.text.strip()]
 
 
@@ -228,6 +252,25 @@ def summarise_url(url: str, model_id: str) -> SummaryResult:
         raise SummariseError("No English captions available for this video.")
     except VideoUnavailable:
         raise SummariseError("Video unavailable (private, removed, or region-locked).")
+    except (RequestBlocked, IpBlocked):
+        raise SummariseError(
+            "YouTube blocked the transcript request from this server's IP. "
+            "This is normal on datacenter IPs. Fix: sign up at https://www.webshare.io "
+            "for a residential proxy (~$3/month) and set WEBSHARE_PROXY_USERNAME and "
+            "WEBSHARE_PROXY_PASSWORD in the server env, then redeploy."
+        )
+    except AgeRestricted:
+        raise SummariseError(
+            "Video is age-restricted; YouTube won't return its transcript without a signed-in cookie."
+        )
+    except PoTokenRequired:
+        raise SummariseError(
+            "YouTube wants a Proof-of-Origin token for this video. Currently unsupported."
+        )
+    except (YouTubeRequestFailed, YouTubeDataUnparsable) as e:
+        raise SummariseError(f"YouTube returned an unexpected response: {e}")
+    except YouTubeTranscriptApiException as e:
+        raise SummariseError(f"Transcript fetch failed: {type(e).__name__}: {e}")
 
     if not segments:
         raise SummariseError("Transcript was empty.")

@@ -173,6 +173,22 @@ async def summarise_endpoint(
         return templates.TemplateResponse(
             request, "error.html", {"message": str(e)}, status_code=400
         )
+    except Exception as e:
+        # Last-line defence so the user sees a styled message rather than
+        # FastAPI's plain "Internal Server Error" text. Log to stderr so the
+        # actual traceback shows in Coolify's logs.
+        import traceback
+        traceback.print_exc()
+        with _rate_lock:
+            bucket = _rate_buckets.get(ip)
+            if bucket:
+                bucket.pop()
+        return templates.TemplateResponse(
+            request,
+            "error.html",
+            {"message": f"Unexpected server error ({type(e).__name__}): {e}"},
+            status_code=500,
+        )
 
     model_meta = get_model(result.model_id)
     ctx = {
