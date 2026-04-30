@@ -72,7 +72,7 @@ async def summarise_endpoint(request: Request, url: str = Form(...)) -> HTMLResp
             _auth_state["ok"] = False
             _auth_state["message"] = message
         return templates.TemplateResponse(
-            request, "error.html", {"message": message}, status_code=400
+            request, "error.html", {"message": message}
         )
 
     body_html = md.markdown(result.body_markdown, extensions=["extra", "sane_lists"])

@@ -141,7 +141,7 @@ async def summarise_endpoint(
 
     if not is_known(model):
         return templates.TemplateResponse(
-            request, "error.html", {"message": "Unknown model selected."}, status_code=400
+            request, "error.html", {"message": "Unknown model selected."}
         )
 
     # Cache check happens BEFORE the rate-limit decrement: same video+model
@@ -159,7 +159,6 @@ async def summarise_endpoint(
             request,
             "error.html",
             {"message": f"Rate limit reached: {RATE_LIMIT_PER_DAY} summaries per IP per 24h. Come back later."},
-            status_code=429,
         )
 
     try:
@@ -171,7 +170,7 @@ async def summarise_endpoint(
             if bucket:
                 bucket.pop()
         return templates.TemplateResponse(
-            request, "error.html", {"message": str(e)}, status_code=400
+            request, "error.html", {"message": str(e)}
         )
     except Exception as e:
         # Last-line defence so the user sees a styled message rather than
@@ -187,7 +186,6 @@ async def summarise_endpoint(
             request,
             "error.html",
             {"message": f"Unexpected server error ({type(e).__name__}): {e}"},
-            status_code=500,
         )
 
     model_meta = get_model(result.model_id)
