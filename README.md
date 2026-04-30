@@ -42,11 +42,14 @@ py -m pip install -r requirements.txt
 # Verify Claude Code is installed + signed in:
 py summarise.py --check
 
-# Summarise a video:
+# Summarise a video — writes <video-id>.md in the current directory:
 py summarise.py "https://www.youtube.com/watch?v=VIDEO_ID"
 
-# Save to a file:
-py summarise.py "https://youtu.be/VIDEO_ID" > summary.md
+# Custom output path:
+py summarise.py "https://youtu.be/VIDEO_ID" -o my-notes.md
+
+# Or print to stdout (for piping):
+py summarise.py "https://youtu.be/VIDEO_ID" -o -
 ```
 
 If you're not signed in, you'll get:

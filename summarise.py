@@ -12,6 +12,7 @@ import shutil
 import subprocess
 import sys
 from dataclasses import dataclass
+from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 from youtube_transcript_api import YouTubeTranscriptApi
@@ -248,6 +249,11 @@ def main() -> None:
         "--check", action="store_true",
         help="Just verify Claude Code is installed and authenticated, then exit.",
     )
+    parser.add_argument(
+        "-o", "--output",
+        help="Output file path. Defaults to <video-id>.md in the current directory. "
+             "Use '-' to write to stdout instead.",
+    )
     args = parser.parse_args()
 
     if args.check:
@@ -263,11 +269,21 @@ def main() -> None:
     except SummariseError as e:
         sys.exit(f"error: {e}")
 
+    full_md = (
+        f"[![Video thumbnail]({result.thumbnail_url})]({result.watch_url})\n\n"
+        f"**[Watch on YouTube]({result.watch_url})**\n\n"
+        f"{result.body_markdown}\n"
+    )
+
     print(f"[summarise] transcript: {result.segment_count} segments, "
           f"~{result.approx_tokens} tokens.", file=sys.stderr)
-    print(f"[![Video thumbnail]({result.thumbnail_url})]({result.watch_url})\n")
-    print(f"**[Watch on YouTube]({result.watch_url})**\n")
-    print(result.body_markdown)
+
+    if args.output == "-":
+        print(full_md)
+    else:
+        output_path = Path(args.output) if args.output else Path(f"{result.video_id}.md")
+        output_path.write_text(full_md, encoding="utf-8")
+        print(f"[saved] {output_path.resolve()}", file=sys.stderr)
 
 
 if __name__ == "__main__":
