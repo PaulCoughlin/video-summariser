@@ -11,6 +11,9 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
+import time
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
@@ -238,6 +241,45 @@ def summarise_url(url: str) -> SummaryResult:
     )
 
 
+_SPINNER_FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+
+
+@contextmanager
+def _cli_spinner(label: str):
+    """Animate a spinner + elapsed counter on stderr until the block exits.
+
+    Falls back to a single printed line when stderr isn't a terminal (e.g. when
+    the script is run from a CI job or piped to a log file).
+    """
+    if not sys.stderr.isatty():
+        print(f"      {label}...", file=sys.stderr, flush=True)
+        yield
+        return
+
+    stop = threading.Event()
+
+    def loop() -> None:
+        start = time.monotonic()
+        i = 0
+        while not stop.is_set():
+            frame = _SPINNER_FRAMES[i % len(_SPINNER_FRAMES)]
+            elapsed = time.monotonic() - start
+            sys.stderr.write(f"\r      {frame} {label} ({elapsed:.0f}s)   ")
+            sys.stderr.flush()
+            stop.wait(0.1)
+            i += 1
+        sys.stderr.write("\r" + " " * (len(label) + 30) + "\r")
+        sys.stderr.flush()
+
+    t = threading.Thread(target=loop, daemon=True)
+    t.start()
+    try:
+        yield
+    finally:
+        stop.set()
+        t.join()
+
+
 def main() -> None:
     # Windows defaults stdout to cp1252; force UTF-8 so em-dashes survive piping.
     if hasattr(sys.stdout, "reconfigure"):
@@ -265,25 +307,46 @@ def main() -> None:
         parser.error("url is required (or use --check)")
 
     try:
-        result = summarise_url(args.url)
+        video_id = extract_video_id(args.url)
+    except ValueError as e:
+        sys.exit(f"error: {e}")
+
+    print(f"[1/3] fetching transcript for {video_id}...", file=sys.stderr)
+    try:
+        segments = fetch_transcript(video_id)
+    except (TranscriptsDisabled, NoTranscriptFound):
+        sys.exit("error: no English captions available for this video.")
+    except VideoUnavailable:
+        sys.exit("error: video unavailable (private, removed, or region-locked).")
+
+    if not segments:
+        sys.exit("error: transcript was empty.")
+
+    watch_url = canonical_watch_url(video_id)
+    prompt = build_prompt(watch_url, format_transcript(segments))
+    approx_tokens = len(prompt) // 4
+    print(f"      → {len(segments)} segments, ~{approx_tokens} tokens", file=sys.stderr)
+
+    print(f"[2/3] summarising with Claude (typically 30-90s for long videos)...", file=sys.stderr)
+    try:
+        with _cli_spinner("waiting for Claude"):
+            body = run_claude(prompt)
     except SummariseError as e:
         sys.exit(f"error: {e}")
 
     full_md = (
-        f"[![Video thumbnail]({result.thumbnail_url})]({result.watch_url})\n\n"
-        f"**[Watch on YouTube]({result.watch_url})**\n\n"
-        f"{result.body_markdown}\n"
+        f"[![Video thumbnail]({thumbnail_url(video_id)})]({watch_url})\n\n"
+        f"**[Watch on YouTube]({watch_url})**\n\n"
+        f"{body}\n"
     )
 
-    print(f"[summarise] transcript: {result.segment_count} segments, "
-          f"~{result.approx_tokens} tokens.", file=sys.stderr)
-
     if args.output == "-":
+        print("[3/3] writing to stdout", file=sys.stderr)
         print(full_md)
     else:
-        output_path = Path(args.output) if args.output else Path(f"{result.video_id}.md")
+        output_path = Path(args.output) if args.output else Path(f"{video_id}.md")
         output_path.write_text(full_md, encoding="utf-8")
-        print(f"[saved] {output_path.resolve()}", file=sys.stderr)
+        print(f"[3/3] saved {output_path.resolve()}", file=sys.stderr)
 
 
 if __name__ == "__main__":
