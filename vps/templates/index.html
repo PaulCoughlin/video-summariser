@@ -156,7 +156,14 @@
         event.preventDefault();
         if (form.querySelector('button[disabled]')) return;
 
-        // Disable inputs while a request is in flight.
+        // Read form values BEFORE disabling controls — disabled inputs are
+        // excluded from FormData, which would send url=null&model=null.
+        const data = new FormData(form);
+        const params = new URLSearchParams();
+        params.set('url', data.get('url'));
+        params.set('model', data.get('model'));
+
+        // Now disable inputs while a request is in flight.
         const controls = form.querySelectorAll('input, select, button');
         controls.forEach((c) => (c.disabled = true));
 
@@ -165,11 +172,6 @@
         const card = tmpl.content.firstElementChild.cloneNode(true);
         const log = card.querySelector('[data-progress-log]');
         result.appendChild(card);
-
-        const data = new FormData(form);
-        const params = new URLSearchParams();
-        params.set('url', data.get('url'));
-        params.set('model', data.get('model'));
 
         const appendLog = (line) => {
           const time = new Date().toLocaleTimeString([], { hour12: false });
