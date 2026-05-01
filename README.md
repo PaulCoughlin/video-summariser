@@ -79,7 +79,12 @@ py summarise.py "https://youtu.be/VIDEO_ID" -o my-notes.md
 
 # Or print to stdout (for piping):
 py summarise.py "https://youtu.be/VIDEO_ID" -o -
+
+# Override the model (handy for particularly dense videos):
+py summarise.py "https://youtu.be/VIDEO_ID" --model opus
 ```
+
+`--model` accepts `default` (your `claude` global setting — the default), `sonnet`, `opus`, or `haiku`. The active model is printed in the progress lines so you can see which one is doing the work.
 
 If you're not signed in, you'll get:
 
@@ -93,13 +98,15 @@ py -m uvicorn app:app --reload --port 8000
 
 Open http://127.0.0.1:8000 in your browser.
 
+A small dropdown next to the URL input lets you pick the model — `default` (your `claude` global setting), `sonnet`, `opus`, or `haiku`. Most of the time you'll leave it on `default`; switch to `opus` for a dense talk where you want the best summary quality, or `haiku` for a quick draft.
+
 While the summary is generating, a small log card streams the pipeline status in real time over Server-Sent Events:
 
 ```
 [14:32:11] starting
 [14:32:11] parsing video URL
 [14:32:11] fetching transcript for P60LqQg1RH8
-[14:32:13] got 768 segments (~10154 tokens) — calling Claude
+[14:32:13] got 768 segments (~10154 tokens) — calling Claude (model: default)
 [14:33:04] summary received
 [14:33:04] rendering
 ```

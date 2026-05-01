@@ -12,10 +12,13 @@ imported by the FastAPI app in ``app.py``. The high-level flow is:
        generated markdown body.
 
 **Public surface for importers:**
-    - ``summarise_url(url, on_progress=None) -> SummaryResult`` — end-to-end
-      entry point. Pass ``on_progress(msg)`` to receive a status string at
-      each pipeline step (used by the web UI to stream a live log).
+    - ``summarise_url(url, on_progress=None, model=None) -> SummaryResult`` —
+      end-to-end entry point. Pass ``on_progress(msg)`` to receive a status
+      string at each pipeline step (used by the web UI for live logs). Pass
+      ``model="opus"`` (or ``"sonnet"``/``"haiku"``) to override the model;
+      ``None`` or ``"default"`` uses your ``claude`` CLI's global setting.
     - ``check_claude_auth() -> (ok, message)`` — cheap startup probe.
+    - ``SUPPORTED_MODELS`` — dict of model-name → ``--model`` flag value.
     - ``SummariseError`` — raised for any user-facing failure (no captions,
       auth missing, timeout, etc.). Anything else is a bug; let it surface.
 
@@ -254,8 +257,24 @@ def _looks_like_auth_error(stderr: str) -> bool:
     return any(h in s for h in _AUTH_ERROR_HINTS)
 
 
-def run_claude(prompt: str) -> str:
+# Models exposed to the UI / CLI. Map of "user-visible name" → flag value
+# passed to `claude -p --model …`. ``None`` means "don't pass --model at all,
+# use whatever model the user's claude install is globally configured to use".
+SUPPORTED_MODELS: dict[str, str | None] = {
+    "default": None,
+    "sonnet": "sonnet",
+    "opus": "opus",
+    "haiku": "haiku",
+}
+
+
+def run_claude(prompt: str, model: str | None = None) -> str:
     """Pipe ``prompt`` to ``claude -p`` and return its stdout, stripped.
+
+    ``model`` is one of the keys of ``SUPPORTED_MODELS`` (``"sonnet"``,
+    ``"opus"``, ``"haiku"``) or ``None`` / ``"default"`` to leave the choice
+    to ``claude``'s global setting (whatever ``~/.claude/settings.json`` /
+    ``ANTHROPIC_MODEL`` resolves to).
 
     Maps three failure modes to clean ``SummariseError`` messages:
       - ``claude`` not on PATH (hint at install URL)
@@ -270,9 +289,20 @@ def run_claude(prompt: str) -> str:
             "Claude Code CLI not found on PATH. Install it from "
             "https://docs.anthropic.com/claude/docs/claude-code first."
         )
+
+    cmd: list[str] = ["claude", "-p"]
+    flag = SUPPORTED_MODELS.get((model or "default").lower(), "__unknown__")
+    if flag == "__unknown__":
+        raise SummariseError(
+            f"Unknown model {model!r}. Use one of: "
+            + ", ".join(SUPPORTED_MODELS.keys())
+        )
+    if flag is not None:
+        cmd += ["--model", flag]
+
     try:
         result = subprocess.run(
-            ["claude", "-p"],
+            cmd,
             input=prompt,
             capture_output=True,
             text=True,
@@ -329,6 +359,7 @@ def check_claude_auth() -> tuple[bool, str]:
 def summarise_url(
     url: str,
     on_progress: Callable[[str], None] | None = None,
+    model: str | None = None,
 ) -> SummaryResult:
     """End-to-end: URL in, structured ``SummaryResult`` out.
 
@@ -340,6 +371,10 @@ def summarise_url(
     short human-readable status string. The web UI uses it to stream a
     live log to the browser via Server-Sent Events; the CLI doesn't pass
     one (it has its own progress prints) so the default is a no-op.
+
+    ``model`` is an optional override (``"sonnet"`` / ``"opus"`` / ``"haiku"``);
+    when ``None`` or ``"default"`` Claude uses whatever model your install is
+    configured for. Useful for running a denser video through Opus.
 
     Used by both the CLI ``main()`` (for piping markdown to a file) and
     the FastAPI app (for rendering the web UI).
@@ -366,8 +401,12 @@ def summarise_url(
     watch_url = canonical_watch_url(video_id)
     prompt = build_prompt(watch_url, format_transcript(segments))
     approx_tokens = len(prompt) // 4
-    progress(f"got {len(segments)} segments (~{approx_tokens} tokens) — calling Claude")
-    body = run_claude(prompt)
+    model_label = (model or "default").lower()
+    progress(
+        f"got {len(segments)} segments (~{approx_tokens} tokens) — "
+        f"calling Claude (model: {model_label})"
+    )
+    body = run_claude(prompt, model=model)
     progress("summary received")
 
     return SummaryResult(
@@ -454,6 +493,14 @@ def main() -> None:
         help="Output file path. Defaults to <video-id>.md in the current directory. "
              "Use '-' to write to stdout instead.",
     )
+    parser.add_argument(
+        "-m", "--model",
+        choices=tuple(SUPPORTED_MODELS.keys()),
+        default="default",
+        help="Which Claude model to use. 'default' (the default) leaves the "
+             "choice to your `claude` CLI's global setting. Pass 'opus' for "
+             "particularly dense videos.",
+    )
     args = parser.parse_args()
 
     # --check is a special mode: probe auth, print the result, exit 0/1.
@@ -491,10 +538,14 @@ def main() -> None:
     print(f"      → {len(segments)} segments, ~{approx_tokens} tokens", file=sys.stderr)
 
     # Step 3 — call Claude. This is the long one (typically 30-90s).
-    print(f"[2/3] summarising with Claude (typically 30-90s for long videos)...", file=sys.stderr)
+    print(
+        f"[2/3] summarising with Claude (model: {args.model}, "
+        f"typically 30-90s for long videos)...",
+        file=sys.stderr,
+    )
     try:
         with _cli_spinner("Claude is roboting.."):
-            body = run_claude(prompt)
+            body = run_claude(prompt, model=args.model)
     except SummariseError as e:
         sys.exit(f"error: {e}")
 

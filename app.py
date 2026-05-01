@@ -43,6 +43,7 @@ from fastapi.templating import Jinja2Templates
 
 from summarise import (
     AUTH_INSTRUCTIONS,
+    SUPPORTED_MODELS,
     SummariseError,
     check_claude_auth,
     summarise_url,
@@ -88,16 +89,21 @@ async def probe_auth_on_startup() -> None:
 
 
 def _render_index(request: Request) -> HTMLResponse:
-    """Render the home page with the current auth state.
+    """Render the home page with the current auth state and the list of
+    selectable models.
 
     Used both for the initial GET and for any handler that wants to bounce
-    the user back to the form. Templates only get the auth flags they need —
+    the user back to the form. Templates only get the values they need —
     no leaking of internal state.
     """
     return templates.TemplateResponse(
         request,
         "index.html",
-        {"auth_ok": _auth_state["ok"], "auth_message": _auth_state["message"]},
+        {
+            "auth_ok": _auth_state["ok"],
+            "auth_message": _auth_state["message"],
+            "models": list(SUPPORTED_MODELS.keys()),  # ["default","sonnet",…]
+        },
     )
 
 
@@ -126,7 +132,11 @@ async def healthz() -> JSONResponse:
 
 
 @app.post("/summarise", response_class=HTMLResponse)
-async def summarise_endpoint(request: Request, url: str = Form(...)) -> HTMLResponse:
+async def summarise_endpoint(
+    request: Request,
+    url: str = Form(...),
+    model: str = Form("default"),
+) -> HTMLResponse:
     """Non-streaming fall-back: run the pipeline and return the summary in one shot.
 
     The page itself uses ``GET /summarise/stream`` (Server-Sent Events) so the
@@ -144,7 +154,7 @@ async def summarise_endpoint(request: Request, url: str = Form(...)) -> HTMLResp
     try:
         # `summarise_url` is sync (it shells out to claude -p, blocking for
         # tens of seconds); offload to a thread so the event loop stays free.
-        result = await asyncio.to_thread(summarise_url, url.strip())
+        result = await asyncio.to_thread(summarise_url, url.strip(), None, model)
     except SummariseError as e:
         message = str(e)
         if message == AUTH_INSTRUCTIONS:
@@ -208,7 +218,11 @@ def _sse(event: str, data: str) -> str:
 
 
 @app.get("/summarise/stream")
-async def summarise_stream(request: Request, url: str) -> StreamingResponse:
+async def summarise_stream(
+    request: Request,
+    url: str,
+    model: str = "default",
+) -> StreamingResponse:
     """Stream the summarisation pipeline as Server-Sent Events.
 
     Emits one ``progress`` event per pipeline step (parsing → fetching →
@@ -232,7 +246,9 @@ async def summarise_stream(request: Request, url: str) -> StreamingResponse:
 
     def worker() -> None:
         try:
-            result = summarise_url(url.strip(), on_progress=on_progress)
+            result = summarise_url(
+                url.strip(), on_progress=on_progress, model=model
+            )
             loop.call_soon_threadsafe(queue.put_nowait, ("result", result))
         except SummariseError as e:
             message = str(e)
