@@ -16,6 +16,9 @@ server.log
 .env
 */.env
 
+# VPS / OpenRouter prototype (kept locally, not in repo)
+vps/
+
 # IDE / editor
 .vscode/
 .idea/

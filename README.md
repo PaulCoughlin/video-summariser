@@ -8,8 +8,6 @@ Two ways to use it:
 
 Both shell out to your local **Claude Code** CLI (`claude -p`), so the LLM call uses your existing Claude subscription rather than a paid API key.
 
-> **Want to host this publicly on a VPS?** See [`vps/`](vps/) for a sister project that calls **OpenRouter** instead, includes a model picker (free + paid), per-IP rate limiting, caching, and step-by-step deployment instructions for **Hostinger + Coolify**.
-
 ## How it works
 
 ```
