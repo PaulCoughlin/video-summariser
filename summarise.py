@@ -32,6 +32,7 @@ import subprocess
 import sys
 import threading
 import time
+from collections.abc import Callable
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -323,21 +324,33 @@ def check_claude_auth() -> tuple[bool, str]:
 # ---------------------------------------------------------------------------
 
 
-def summarise_url(url: str) -> SummaryResult:
+def summarise_url(
+    url: str,
+    on_progress: Callable[[str], None] | None = None,
+) -> SummaryResult:
     """End-to-end: URL in, structured ``SummaryResult`` out.
 
     Wires together URL parsing → transcript fetch → prompt build → claude
     call. All user-facing failure modes are translated to ``SummariseError``
     with messages safe to display unmodified.
 
+    ``on_progress`` is an optional callback invoked at each step with a
+    short human-readable status string. The web UI uses it to stream a
+    live log to the browser via Server-Sent Events; the CLI doesn't pass
+    one (it has its own progress prints) so the default is a no-op.
+
     Used by both the CLI ``main()`` (for piping markdown to a file) and
     the FastAPI app (for rendering the web UI).
     """
+    progress = on_progress or (lambda _msg: None)
+
+    progress("parsing video URL")
     try:
         video_id = extract_video_id(url)
     except ValueError as e:
         raise SummariseError(str(e)) from e
 
+    progress(f"fetching transcript for {video_id}")
     try:
         segments = fetch_transcript(video_id)
     except (TranscriptsDisabled, NoTranscriptFound):
@@ -350,7 +363,10 @@ def summarise_url(url: str) -> SummaryResult:
 
     watch_url = canonical_watch_url(video_id)
     prompt = build_prompt(watch_url, format_transcript(segments))
+    approx_tokens = len(prompt) // 4
+    progress(f"got {len(segments)} segments (~{approx_tokens} tokens) — calling Claude")
     body = run_claude(prompt)
+    progress("summary received")
 
     return SummaryResult(
         video_id=video_id,
@@ -358,7 +374,7 @@ def summarise_url(url: str) -> SummaryResult:
         thumbnail_url=thumbnail_url(video_id),
         body_markdown=body,
         segment_count=len(segments),
-        approx_tokens=len(prompt) // 4,  # rough char→token heuristic
+        approx_tokens=approx_tokens,  # rough char→token heuristic
     )
 
 

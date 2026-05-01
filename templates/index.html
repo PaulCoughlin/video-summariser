@@ -8,7 +8,6 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
   <script src="https://cdn.tailwindcss.com"></script>
-  <script src="https://unpkg.com/htmx.org@2.0.3" integrity="sha384-0895/pl2MU10Hqc6jd4RvrthNlDiE9U1tWmX7WRESftEDRosgxNsQG/Ze9YMRzHq" crossorigin="anonymous"></script>
   <script>
     tailwind.config = {
       theme: {
@@ -72,12 +71,7 @@
     {% endif %}
 
     <form
-      hx-post="/summarise"
-      hx-target="#result"
-      hx-swap="innerHTML"
-      hx-indicator="#loading"
-      hx-disabled-elt="find button, find input"
-      hx-on::before-request="document.getElementById('result').innerHTML = ''"
+      id="summarise-form"
       class="bg-ink-900/60 backdrop-blur border border-ink-700 rounded-2xl p-4 sm:p-5 shadow-2xl shadow-black/40 {% if not auth_ok %}opacity-60 pointer-events-none{% endif %}"
     >
       <div class="flex flex-col sm:flex-row gap-3">
@@ -99,27 +93,111 @@
       </div>
     </form>
 
-    <div id="loading" class="htmx-indicator mt-8 text-center">
-      <div class="inline-flex items-center gap-3 text-slate-400">
-        <svg class="animate-spin h-5 w-5 text-accent" fill="none" viewBox="0 0 24 24">
-          <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="3"></circle>
-          <path class="opacity-90" fill="currentColor" d="M4 12a8 8 0 018-8v3a5 5 0 00-5 5H4z"></path>
-        </svg>
-        <span>Fetching transcript and summarising — this can take 30–90s for long videos.</span>
-      </div>
-    </div>
-
     <section id="result" class="mt-10"></section>
+
+    <template id="progress-template">
+      <div class="bg-ink-900/60 backdrop-blur border border-ink-700 rounded-2xl p-5 shadow-2xl shadow-black/40">
+        <div class="flex items-center gap-3 mb-3">
+          <svg data-spinner class="animate-spin h-4 w-4 text-accent shrink-0" fill="none" viewBox="0 0 24 24">
+            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="3"></circle>
+            <path class="opacity-90" fill="currentColor" d="M4 12a8 8 0 018-8v3a5 5 0 00-5 5H4z"></path>
+          </svg>
+          <span class="text-sm text-slate-300">Working on it — typically 30–90s for long videos.</span>
+        </div>
+        <pre data-progress-log class="text-xs font-mono text-slate-400 bg-ink-950/60 border border-ink-800 rounded-lg p-3 whitespace-pre-wrap leading-relaxed"></pre>
+      </div>
+    </template>
 
     <footer class="mt-20 text-center text-sm text-slate-500">
       Built with Claude Code · Uses your local subscription, not the API.
     </footer>
   </main>
 
-  <style>
-    .htmx-indicator { display: none; }
-    .htmx-request .htmx-indicator { display: block; }
-    .htmx-request.htmx-indicator { display: block; }
-  </style>
+  <script>
+    (function () {
+      const form = document.getElementById('summarise-form');
+      if (!form) return;
+      const result = document.getElementById('result');
+      const tmpl = document.getElementById('progress-template');
+
+      const errorCard = (message) => {
+        const wrapper = document.createElement('div');
+        wrapper.innerHTML = `
+          <div class="bg-red-950/40 border border-red-900/60 rounded-2xl p-6 text-red-200 mb-4">
+            <div class="flex items-start gap-3">
+              <svg class="w-5 h-5 mt-0.5 flex-shrink-0 text-red-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01M5.07 19h13.86c1.54 0 2.5-1.67 1.73-3L13.73 4a2 2 0 00-3.46 0L3.34 16c-.77 1.33.19 3 1.73 3z"/>
+              </svg>
+              <div>
+                <p class="font-medium text-red-100">Couldn't summarise that video</p>
+                <p class="mt-1 text-sm" data-msg></p>
+              </div>
+            </div>
+          </div>`;
+        wrapper.querySelector('[data-msg]').textContent = message;
+        return wrapper.firstElementChild;
+      };
+
+      let activeSource = null;
+
+      form.addEventListener('submit', (event) => {
+        event.preventDefault();
+        if (form.querySelector('button[disabled]')) return;
+
+        // Read form values BEFORE disabling controls — disabled inputs are
+        // excluded from FormData, which would send url=null.
+        const data = new FormData(form);
+        const params = new URLSearchParams();
+        params.set('url', data.get('url'));
+
+        // Disable the form while a request is in flight.
+        const controls = form.querySelectorAll('input, button');
+        controls.forEach((c) => (c.disabled = true));
+
+        // Replace #result with the progress card (clears any previous summary).
+        result.innerHTML = '';
+        const card = tmpl.content.firstElementChild.cloneNode(true);
+        const log = card.querySelector('[data-progress-log]');
+        const spinner = card.querySelector('[data-spinner]');
+        result.appendChild(card);
+
+        const appendLog = (line) => {
+          const time = new Date().toLocaleTimeString([], { hour12: false });
+          log.textContent += `[${time}] ${line}\n`;
+        };
+
+        if (activeSource) activeSource.close();
+        const es = new EventSource('/summarise/stream?' + params.toString());
+        activeSource = es;
+
+        es.addEventListener('progress', (ev) => appendLog(ev.data));
+
+        es.addEventListener('result', (ev) => {
+          try {
+            const payload = JSON.parse(ev.data);
+            result.innerHTML = payload.html;
+          } catch (e) {
+            result.innerHTML = '';
+            result.appendChild(errorCard('Failed to parse server response.'));
+          }
+          es.close();
+          controls.forEach((c) => (c.disabled = false));
+        });
+
+        es.addEventListener('error', (ev) => {
+          // EventSource fires "error" both for our explicit `event: error` frames
+          // (which carry data) and for transport-level disconnects (no data).
+          const msg = ev.data && ev.data.length
+            ? ev.data
+            : 'Lost connection to the server before the summary was ready.';
+          // Stop the spinner inside the progress card but keep the log visible.
+          if (spinner) spinner.classList.remove('animate-spin');
+          result.insertBefore(errorCard(msg), result.firstChild);
+          es.close();
+          controls.forEach((c) => (c.disabled = false));
+        });
+      });
+    })();
+  </script>
 </body>
 </html>
