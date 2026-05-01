@@ -194,6 +194,18 @@ Timestamps are constrained by the prompt to come from lines that appear verbatim
 - **Single-shot only.** A video whose transcript exceeds the model's context window will fail. None of the test videos in this README hit that limit.
 - **Subprocess timeout: 3 minutes.** Long videos near the context limit can occasionally bump up against it.
 
+## Sample output
+
+The two standard test videos rendered in the web UI:
+
+### [R65qnDnSFWY](https://youtu.be/R65qnDnSFWY) (42 min)
+
+![Summary screenshot for R65qnDnSFWY](R65qnDnSFWY.png)
+
+### [P60LqQg1RH8](https://youtu.be/P60LqQg1RH8) (31 min)
+
+![Summary screenshot for P60LqQg1RH8](P60LqQg1RH8.png)
+
 ## License
 
 MIT — see [LICENSE](LICENSE).
