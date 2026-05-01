@@ -34,7 +34,7 @@ If a video genuinely overflowed (it'd need to be ~5+ hours of dense speech), the
 - **Subscription-priced, not API-priced.** Shelling out to `claude -p` means the LLM call costs nothing at the margin (uses your Max subscription) and there's no API key to manage. Trade-off: only works on a machine you've signed into Claude Code on, so it can't be deployed headless without swapping the back end (which I tried — see commit history — and the YouTube transcript API actively blocks datacenter IPs anyway, so "deploy publicly" stops being free for unrelated reasons).
 - **Grounded timestamps.** Every transcript line is annotated as `[M:SS|Ns]` — both the human-readable timecode *and* the same moment in raw seconds. The prompt instructs the model to use both verbatim from the transcript, so it doesn't have to do arithmetic and can't quietly drift. Combined with the deep-link template (`&t=Ns`), every "Watch These Moments" entry lands within the right second. Empirically, 6/6 timestamps were verbatim across the test videos.
 - **Strict output format, no preamble.** The prompt bans "Here is your summary" boilerplate and fixes the section names so the markdown is paste-ready and the body could be machine-parsed if anything ever wanted to.
-- **A subprocess, not a library.** Calling `claude -p` rather than the Python SDK keeps this a 100-ish-line script. The only real downside is a single 30-90s blocking call per request — fine for a personal tool, mitigated in the web UI by an HTMX swap with a loading state.
+- **A subprocess, not a library.** Calling `claude -p` rather than the Python SDK keeps this a 100-ish-line script. The only real downside is a single 30-90s blocking call per request — fine for a personal tool, and mitigated in the web UI by streaming pipeline progress over Server-Sent Events so the user sees a live log instead of staring at a static spinner.
 
 ## How it works
 
@@ -82,7 +82,7 @@ py summarise.py "https://youtu.be/VIDEO_ID" -o -
 
 If you're not signed in, you'll get:
 
-> error: Claude Code isn't signed in on this machine. Open a terminal, run `claude` once, complete the sign-in, then try again.
+> error: Claude Code isn't signed in on this machine. Stop the app (Ctrl+C in its terminal), run `claude /login` and complete the sign-in, then start the app again.
 
 ## Web UI
 
@@ -92,7 +92,29 @@ py -m uvicorn app:app --reload --port 8000
 
 Open http://127.0.0.1:8000 in your browser.
 
-The page probes Claude Code's auth status on startup. If you're not signed in, the form is disabled and a banner explains how to fix it; click **Re-check authentication** after running `claude` to clear it.
+While the summary is generating, a small log card streams the pipeline status in real time over Server-Sent Events:
+
+```
+[14:32:11] starting
+[14:32:11] parsing video URL
+[14:32:11] fetching transcript for P60LqQg1RH8
+[14:32:13] got 768 segments (~10154 tokens) — calling Claude
+[14:33:04] summary received
+[14:33:04] rendering
+```
+
+When Claude responds, the log card is replaced with the rendered summary (thumbnail, TL;DR, takeaways, deep-linked moments). If anything fails mid-flow, an error card appears above the log so you can see exactly which step blew up.
+
+The page probes Claude Code's auth status on startup. If you're not signed in, the form is disabled and a banner walks you through the fix: stop the app, run `claude /login` in another terminal, restart the app.
+
+### Endpoints
+
+| Method | Path | Purpose |
+|---|---|---|
+| `GET` | `/` | The form |
+| `GET` | `/summarise/stream?url=…` | SSE: live progress + final rendered summary. The page uses this. |
+| `POST` | `/summarise` | Non-streaming fall-back: runs the pipeline and returns the rendered HTML in one response. Useful for `curl` / scripts. |
+| `GET` | `/healthz` | JSON health/auth status, for tunnel uptime checks. |
 
 ### Exposing it publicly
 

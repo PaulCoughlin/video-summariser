@@ -12,7 +12,9 @@ imported by the FastAPI app in ``app.py``. The high-level flow is:
        generated markdown body.
 
 **Public surface for importers:**
-    - ``summarise_url(url) -> SummaryResult`` — end-to-end entry point.
+    - ``summarise_url(url, on_progress=None) -> SummaryResult`` — end-to-end
+      entry point. Pass ``on_progress(msg)`` to receive a status string at
+      each pipeline step (used by the web UI to stream a live log).
     - ``check_claude_auth() -> (ok, message)`` — cheap startup probe.
     - ``SummariseError`` — raised for any user-facing failure (no captions,
       auth missing, timeout, etc.). Anything else is a bug; let it surface.

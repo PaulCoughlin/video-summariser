@@ -1,12 +1,12 @@
 """FastAPI web UI wrapping ``summarise.py``.
 
 A single-page app that takes a YouTube URL, calls into ``summarise_url``,
-and renders the result as styled HTML. The whole stack is intentionally
-small: FastAPI for routing, Jinja2 for templates, htmx on the page for
-the in-place form swap, and Tailwind via CDN for styling. No database,
-no users, no rate limiting — this is meant to run on your own machine
-and be exposed (if at all) through a Cloudflare Tunnel with Access in
-front of it.
+and streams progress + the rendered summary back to the browser. The
+whole stack is intentionally small: FastAPI for routing, Jinja2 for
+templates, Server-Sent Events for live progress, and Tailwind via CDN
+for styling. No database, no users, no rate limiting — this is meant
+to run on your own machine and be exposed (if at all) through a
+Cloudflare Tunnel with Access in front of it.
 
 **Run locally:**
     py -m uvicorn app:app --reload --port 8000
@@ -14,10 +14,15 @@ front of it.
 Then open http://127.0.0.1:8000.
 
 **Routes:**
-    GET  /            — the form
-    POST /summarise   — runs the pipeline, returns the summary fragment
-                        (or an error fragment, also as 200, so htmx swaps it)
-    GET  /healthz     — JSON health/auth status, for tunnels and uptime
+    GET  /                    — the form
+    GET  /summarise/stream    — SSE: streams progress events ending in either
+                                a ``result`` (rendered HTML) or ``error`` event.
+                                The page's submit handler uses this.
+    POST /summarise           — non-streaming fall-back: runs the pipeline
+                                synchronously and returns the rendered
+                                summary fragment in one response. Useful
+                                for scripts/curl; not used by the page.
+    GET  /healthz             — JSON health/auth status, for tunnels and uptime.
 
 The page is gated on Claude Code being signed in: a banner appears when
 auth is missing and the form is disabled until the user runs
@@ -122,17 +127,19 @@ async def healthz() -> JSONResponse:
 
 @app.post("/summarise", response_class=HTMLResponse)
 async def summarise_endpoint(request: Request, url: str = Form(...)) -> HTMLResponse:
-    """Run the full summarisation pipeline and return an HTML fragment.
+    """Non-streaming fall-back: run the pipeline and return the summary in one shot.
 
-    The form on the index page POSTs here via htmx, which swaps the
-    response into ``#result``. Both the success and the error responses
-    return 200 with HTML (rather than 4xx) so htmx will swap them in —
-    a non-2xx status would be silently dropped by the default htmx config.
+    The page itself uses ``GET /summarise/stream`` (Server-Sent Events) so the
+    user sees live progress. This endpoint is kept around for scripted
+    callers that just want the rendered HTML (e.g. ``curl -X POST -d url=…``).
+
+    Both success and error responses return HTTP 200 with an HTML fragment —
+    the caller can decide how to display it.
 
     On a clean ``SummariseError`` whose message matches ``AUTH_INSTRUCTIONS``,
-    the global auth flag is flipped back to false so the banner reappears
-    on the next page load — picking up "user signed out mid-session" without
-    a server restart.
+    the global auth flag is flipped back to false so the banner reappears on
+    the next page load — picking up "user signed out mid-session" without a
+    server restart.
     """
     try:
         # `summarise_url` is sync (it shells out to claude -p, blocking for
@@ -140,8 +147,6 @@ async def summarise_endpoint(request: Request, url: str = Form(...)) -> HTMLResp
         result = await asyncio.to_thread(summarise_url, url.strip())
     except SummariseError as e:
         message = str(e)
-        # If this looks like an auth failure, flip the global flag so the
-        # banner appears on the next page load.
         if message == AUTH_INSTRUCTIONS:
             _auth_state["ok"] = False
             _auth_state["message"] = message
@@ -149,9 +154,6 @@ async def summarise_endpoint(request: Request, url: str = Form(...)) -> HTMLResp
             request, "error.html", {"message": message}
         )
 
-    # Render the LLM-generated markdown body into HTML. The `extra` and
-    # `sane_lists` extensions cover GitHub-flavoured tables, fenced code,
-    # and consistent list parsing.
     return templates.TemplateResponse(request, "summary.html", _summary_context(result))
 
 
