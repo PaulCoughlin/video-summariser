@@ -8,6 +8,34 @@ Two ways to use it:
 
 Both shell out to your local **Claude Code** CLI (`claude -p`), so the LLM call uses your existing Claude subscription rather than a paid API key.
 
+## Notes on the brief
+
+> *"The interesting part is how you handled the 30+ minute videos, so tell us what you picked: chunking, big context, map-reduce, or something weirder."*
+
+**Picked: single-shot, big context window. No chunking, no map-reduce.**
+
+The temptation with long videos is to immediately reach for map-reduce — chunk the transcript, summarise each chunk, then summarise the summaries. It's the classically "right-feeling" answer. But it's the wrong one here, and the math is worth doing once.
+
+A 90-minute podcast transcript is **~12-18k tokens** (verified empirically across the test videos in this repo: a 31-minute talk came in at ~10k, a 42-minute build at ~12k). Claude Sonnet's context window is **200k tokens**. That's a 10× headroom over the *worst case* of the brief's hard requirement. Even a three-hour conversation slots in comfortably. Chunking solves a problem this app doesn't have.
+
+The cost of chunking-when-you-don't-need-to is real:
+
+- **Each chunk-summary loses global context.** The model can't tell which moment is *the* turning point of a 90-minute talk if it only sees 5 minutes at a time. The "Watch These Moments" section in particular degrades to "here's the most interesting bit of each chunk" — not the same thing.
+- **Tone and emphasis drift between chunks.** The TL;DR ends up reading like a bullet list of segments rather than a coherent thesis.
+- **More LLM calls = more chances to hallucinate.** Each round of summarisation is another chance for invented facts or drifted timestamps.
+- **More code, more bugs.** Chunk-boundary heuristics, overlap windows, summary-of-summaries plumbing — all surface area for things to go subtly wrong.
+
+So the rule applied here: **only chunk when forced by the context window**, not because the input "feels long". For the 30-minute minimum the brief specifies, single-shot wins on every axis (quality, cost, complexity).
+
+If a video genuinely overflowed (it'd need to be ~5+ hours of dense speech), the next move would still not be map-reduce — it'd be a model with a larger context (Gemini's 1M, etc.) or sliding-window summarisation that preserves global cross-references. Map-reduce is a last resort, not a default.
+
+### Other design choices worth flagging
+
+- **Subscription-priced, not API-priced.** Shelling out to `claude -p` means the LLM call costs nothing at the margin (uses your Max subscription) and there's no API key to manage. Trade-off: only works on a machine you've signed into Claude Code on, so it can't be deployed headless without swapping the back end (which I tried — see commit history — and the YouTube transcript API actively blocks datacenter IPs anyway, so "deploy publicly" stops being free for unrelated reasons).
+- **Grounded timestamps.** Every transcript line is annotated as `[M:SS|Ns]` — both the human-readable timecode *and* the same moment in raw seconds. The prompt instructs the model to use both verbatim from the transcript, so it doesn't have to do arithmetic and can't quietly drift. Combined with the deep-link template (`&t=Ns`), every "Watch These Moments" entry lands within the right second. Empirically, 6/6 timestamps were verbatim across the test videos.
+- **Strict output format, no preamble.** The prompt bans "Here is your summary" boilerplate and fixes the section names so the markdown is paste-ready and the body could be machine-parsed if anything ever wanted to.
+- **A subprocess, not a library.** Calling `claude -p` rather than the Python SDK keeps this a 100-ish-line script. The only real downside is a single 30-90s blocking call per request — fine for a personal tool, mitigated in the web UI by an HTMX swap with a loading state.
+
 ## How it works
 
 ```
