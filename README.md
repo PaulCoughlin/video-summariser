@@ -28,7 +28,7 @@ The cost of chunking-when-you-don't-need-to is real:
 
 So the rule applied here: **only chunk when forced by the context window**, not because the input "feels long". For the 30-minute minimum the brief specifies, single-shot wins on every axis (quality, cost, complexity).
 
-If a video genuinely overflowed (it'd need to be ~5+ hours of dense speech), the next move would still not be map-reduce — it'd be a model with a larger context (Gemini's 1M, etc.) or sliding-window summarisation that preserves global cross-references. Map-reduce is a last resort, not a default.
+If a video genuinely overflowed (it'd need to be ~5+ hours of dense speech), the next move would still not be map-reduce — it'd be a model with a larger context window. The natural escalation path doesn't even leave the Claude family: **Claude Opus 4.7 has a 1M-token context variant**, plenty for a full-day archive. Adding it is a one-line change to `SUPPORTED_MODELS` (see [Model selection](#model-selection-built-in) below). Sliding-window summarisation that preserves global cross-references would be the next step after that. Map-reduce is a last resort, not a default.
 
 ### Other design choices worth flagging
 
@@ -36,6 +36,29 @@ If a video genuinely overflowed (it'd need to be ~5+ hours of dense speech), the
 - **Grounded timestamps.** Every transcript line is annotated as `[M:SS|Ns]` — both the human-readable timecode *and* the same moment in raw seconds. The prompt instructs the model to use both verbatim from the transcript, so it doesn't have to do arithmetic and can't quietly drift. Combined with the deep-link template (`&t=Ns`), every "Watch These Moments" entry lands within the right second. Empirically, 6/6 timestamps were verbatim across the test videos.
 - **Strict output format, no preamble.** The prompt bans "Here is your summary" boilerplate and fixes the section names so the markdown is paste-ready and the body could be machine-parsed if anything ever wanted to.
 - **A subprocess, not a library.** Calling `claude -p` rather than the Python SDK keeps this a 100-ish-line script. The only real downside is a single 30-90s blocking call per request — fine for a personal tool, and mitigated in the web UI by streaming pipeline progress over Server-Sent Events so the user sees a live log instead of staring at a static spinner.
+
+### Model selection (built in)
+
+Both the CLI and the web UI let you pick which Claude model to use, with a `default` option that's the safe choice 99% of the time.
+
+- **`default`** — *don't* pass `--model` at all to `claude -p`, so the call uses whatever your `claude` install is globally configured for (your tier's current Sonnet / Opus / Haiku alias, or whatever you've set via `claude /model …` or `~/.claude/settings.json`). This means you don't have to update the app every time Anthropic ships a new version — the alias already follows the latest one.
+- **`sonnet` / `opus` / `haiku`** — explicit overrides. Useful when you want to deviate from your default for a specific summary: bump to `opus` for a particularly dense talk, drop to `haiku` for a quick scan.
+
+The list of selectable models lives in a single dict, [`SUPPORTED_MODELS`](summarise.py) in `summarise.py`. Editing that one place updates the CLI's `--model` choices, the validation in `run_claude()`, and the web-UI dropdown — all three stay in sync automatically.
+
+**Adding the 1M-context Opus** for the >5-hour-video case mentioned above is one entry:
+
+```python
+SUPPORTED_MODELS = {
+    "default": None,
+    "sonnet": "sonnet",
+    "opus": "opus",
+    "opus-1m": "claude-opus-4-7-1m-…",  # paste the real ID from Anthropic's docs
+    "haiku": "haiku",
+}
+```
+
+The full model IDs (and the exact 1M-variant slug) live at [Anthropic's models overview](https://docs.anthropic.com/en/docs/about-claude/models/overview). Each pull-request transcript fetch logs which model ran the summary, so you can A/B different variants on the same video and compare quality directly.
 
 ## How it works
 
@@ -98,9 +121,7 @@ py -m uvicorn app:app --reload --port 8000
 
 Open http://127.0.0.1:8000 in your browser.
 
-A small dropdown next to the URL input lets you pick the model — `default` (your `claude` global setting), `sonnet`, `opus`, or `haiku`. Most of the time you'll leave it on `default`; switch to `opus` for a dense talk where you want the best summary quality, or `haiku` for a quick draft.
-
-> **Pinning to a specific version.** The aliases (`sonnet`, `opus`, `haiku`) get bumped to the current generation as Anthropic ships new versions. To pin to a specific model ID — for instance the 1M-context Opus variant — add an entry to `SUPPORTED_MODELS` in [`summarise.py`](summarise.py) where the value is the full ID (e.g. `claude-opus-4-7-20250930`) instead of the alias. The CLI choices, validation, and the dropdown all read from that one dict, so a single edit gives you the new option in all three places. Look up exact model IDs at [Anthropic's models overview](https://docs.anthropic.com/en/docs/about-claude/models/overview).
+A dropdown next to the URL input lets you pick the model — `default` (your `claude` global setting), `sonnet`, `opus`, or `haiku`. Most of the time you'll leave it on `default`; switch to `opus` for a dense talk where you want the best summary quality, or `haiku` for a quick draft. See [Model selection](#model-selection-built-in) for how to add custom variants like the 1M-context Opus.
 
 While the summary is generating, a small log card streams the pipeline status in real time over Server-Sent Events:
 
