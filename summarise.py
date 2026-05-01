@@ -1,7 +1,26 @@
-"""Summarise a YouTube video into TL;DR + takeaways + key moments.
+"""Summarise a YouTube video into TL;DR + takeaways + key timestamped moments.
 
-Pipes a structured prompt to `claude -p` (uses your Claude Code subscription;
-no Anthropic API key needed).
+This module is both a **CLI** (``py summarise.py <url>``) and a **library**
+imported by the FastAPI app in ``app.py``. The high-level flow is:
+
+    1. Parse a YouTube URL and pull the 11-character video ID.
+    2. Fetch the English caption track via youtube-transcript-api.
+    3. Annotate every transcript line with ``[M:SS|Ns]`` markers so the LLM
+       can build clickable ``&t=Ns`` deep-links without doing arithmetic.
+    4. Pipe a structured prompt to ``claude -p`` — uses your Claude Code
+       subscription, so no Anthropic API key is needed — and return the
+       generated markdown body.
+
+**Public surface for importers:**
+    - ``summarise_url(url) -> SummaryResult`` — end-to-end entry point.
+    - ``check_claude_auth() -> (ok, message)`` — cheap startup probe.
+    - ``SummariseError`` — raised for any user-facing failure (no captions,
+      auth missing, timeout, etc.). Anything else is a bug; let it surface.
+
+**Run as a script:**
+    py summarise.py <url>          # writes <video-id>.md in CWD
+    py summarise.py --check        # verify Claude Code is signed in
+    py summarise.py <url> -o -     # write markdown to stdout instead
 """
 
 from __future__ import annotations
@@ -26,29 +45,61 @@ from youtube_transcript_api._errors import (
 )
 
 
+# ---------------------------------------------------------------------------
+# Errors & result types
+# ---------------------------------------------------------------------------
+
+
 class SummariseError(Exception):
-    """Anything we want the caller (CLI or web) to render as a clean message."""
+    """A user-visible failure with a message safe to render directly.
+
+    Raised in place of leaking lower-level exceptions (subprocess errors,
+    transcript-API internals, etc.) so the CLI and web layer can pass the
+    message through unmodified — they never need to interpret the cause.
+    """
 
 
 @dataclass
 class SummaryResult:
-    video_id: str
-    watch_url: str
-    thumbnail_url: str
-    body_markdown: str  # the LLM-generated body (TL;DR, takeaways, moments)
-    segment_count: int
-    approx_tokens: int
+    """Everything a caller needs to render a finished summary.
+
+    ``body_markdown`` is just the LLM-generated body (TL;DR, key takeaways,
+    watch-these-moments). The CLI and web layer wrap it with their own
+    header (thumbnail link + 'Watch on YouTube') so the analytic body
+    stays composable.
+    """
+
+    video_id: str          # 11-char YouTube ID, e.g. "P60LqQg1RH8"
+    watch_url: str         # canonical https://www.youtube.com/watch?v=<id>
+    thumbnail_url: str     # max-resolution preview JPG (renderer falls back if missing)
+    body_markdown: str     # the LLM-generated TL;DR + takeaways + timestamped moments
+    segment_count: int     # number of transcript lines fetched (diagnostic)
+    approx_tokens: int     # rough prompt size (chars / 4) for diagnostic display
+
+
+# ---------------------------------------------------------------------------
+# URL parsing & YouTube helpers
+# ---------------------------------------------------------------------------
 
 
 def extract_video_id(url: str) -> str:
-    """Pull the 11-char video ID out of any common YouTube URL shape."""
+    """Pull the 11-char video ID out of any common YouTube URL shape.
+
+    Supports the watch URL (``youtube.com/watch?v=…``), short URL
+    (``youtu.be/…``), shorts (``/shorts/…``), live (``/live/…``), embed
+    (``/embed/…``), and the legacy ``/v/…`` form. Trailing query
+    parameters like ``&t=42s`` are ignored. Raises ``ValueError`` if
+    the URL doesn't yield a valid 11-character ID.
+    """
     parsed = urlparse(url)
     host = (parsed.hostname or "").lower().lstrip("www.")
 
     if host == "youtu.be":
+        # https://youtu.be/<id>[?…]
         vid = parsed.path.lstrip("/").split("/")[0]
     elif host.endswith("youtube.com"):
         if parsed.path == "/watch":
+            # https://www.youtube.com/watch?v=<id>&…
             vid = parse_qs(parsed.query).get("v", [""])[0]
         else:
             # /shorts/<id>, /live/<id>, /embed/<id>, /v/<id>
@@ -57,42 +108,75 @@ def extract_video_id(url: str) -> str:
     else:
         vid = ""
 
+    # YouTube IDs are exactly 11 chars from the URL-safe-base64 alphabet.
     if not re.fullmatch(r"[A-Za-z0-9_-]{11}", vid):
         raise ValueError(f"Could not extract a YouTube video ID from: {url}")
     return vid
 
 
 def fetch_transcript(video_id: str) -> list[tuple[int, str]]:
-    """Return [(start_seconds, text), ...] for the best available English track."""
+    """Fetch the best English caption track as ``[(start_seconds, text), …]``.
+
+    Tries ``en`` → ``en-US`` → ``en-GB`` in priority order. Drops segments
+    whose text is blank after stripping. Lets the library's own exception
+    types (``TranscriptsDisabled``, ``NoTranscriptFound``, ``VideoUnavailable``)
+    propagate — the caller maps them to user-friendly ``SummariseError``s.
+    """
     fetched = YouTubeTranscriptApi().fetch(video_id, languages=("en", "en-US", "en-GB"))
     return [(int(s.start), s.text.strip()) for s in fetched if s.text and s.text.strip()]
 
 
 def format_timestamp(seconds: int) -> str:
+    """Render seconds as ``M:SS`` (under an hour) or ``H:MM:SS``.
+
+    Matches the way YouTube itself displays timecodes, which is also the
+    shape the LLM is asked to cite in its output.
+    """
     h, rem = divmod(seconds, 3600)
     m, s = divmod(rem, 60)
     return f"{h}:{m:02d}:{s:02d}" if h else f"{m}:{s:02d}"
 
 
 def canonical_watch_url(video_id: str) -> str:
+    """Build the canonical watch URL the deep-links append ``&t=Ns`` to."""
     return f"https://www.youtube.com/watch?v={video_id}"
 
 
 def thumbnail_url(video_id: str) -> str:
-    # maxresdefault is missing on some videos; hqdefault is universally present.
-    # We use maxresdefault and let the renderer fall back visually if absent —
-    # better quality on the common case.
+    """Best-quality thumbnail URL.
+
+    ``maxresdefault`` is missing on some videos; ``hqdefault`` is universally
+    present. We optimistically use ``maxresdefault`` and let the renderer
+    fall back visually if absent (the web template handles this with an
+    ``onerror`` handler) — better quality on the common case.
+    """
     return f"https://img.youtube.com/vi/{video_id}/maxresdefault.jpg"
 
 
 def format_transcript(segments: list[tuple[int, str]]) -> str:
-    # Each line carries both the human-readable timestamp and the raw seconds,
-    # so the model can write a deep-link URL without doing arithmetic.
+    """Annotate the transcript so the LLM can build deep-links cheaply.
+
+    Each line is rendered as ``[M:SS|Ns] <text>`` — both the human-readable
+    timestamp the model will cite back to the user *and* the same moment
+    in raw seconds. The model just appends ``&t=Ns`` to the watch URL; no
+    arithmetic, no chance of off-by-one drift.
+    """
     return "\n".join(
         f"[{format_timestamp(t)}|{t}s] {text}" for t, text in segments
     )
 
 
+# ---------------------------------------------------------------------------
+# Prompt
+# ---------------------------------------------------------------------------
+
+# The prompt deliberately:
+#   - bans preamble / closing remarks so the body is paste-ready Markdown
+#   - fixes the section names and ordering so we can post-process if needed
+#   - constrains takeaway count to a tight 5-8 (avoids fluffy long lists)
+#   - tells the model to cite *verbatim* timestamps from the transcript,
+#     not invented ones — combined with the [M:SS|Ns] annotation this gives
+#     the closest thing to a hard guarantee the deep-links will be valid.
 PROMPT_TEMPLATE = """You are summarising a YouTube video for a friend who hasn't watched it.
 
 The video URL is: {url}
@@ -130,19 +214,30 @@ Transcript:
 
 
 def build_prompt(url: str, transcript: str) -> str:
+    """Inject the watch URL and annotated transcript into ``PROMPT_TEMPLATE``."""
     return PROMPT_TEMPLATE.format(url=url, transcript=transcript)
 
 
+# ---------------------------------------------------------------------------
+# Claude Code invocation
+# ---------------------------------------------------------------------------
+
+# Hard ceiling on a single `claude -p` call. Long videos near the context
+# limit can occasionally get close to this; bump if you hit timeouts.
 CLAUDE_TIMEOUT_SECONDS = 180
 
-# Substrings (lowercased) that, if seen in claude's stderr, mean "you're not signed in".
-# Matched loosely because the exact wording can change between CLI versions.
+# Substrings (lowercased) that, if seen in claude's stderr, mean "you're not
+# signed in". Matched loosely because the exact wording can change between
+# CLI versions — better to occasionally false-positive than to surface a raw
+# auth error as "Claude failed (exit 1): …".
 _AUTH_ERROR_HINTS = (
     "log in", "login", "sign in", "signin", "authenticate", "authentication",
     "unauthorised", "unauthorized", "not authorised", "not authorized",
     "credentials", "api key",
 )
 
+# Single source of truth for the auth-failure message, so the CLI and web
+# UI tell users exactly the same thing to do.
 AUTH_INSTRUCTIONS = (
     "Claude Code isn't signed in on this machine. "
     "Stop the app (Ctrl+C in its terminal), run `claude /login` and complete "
@@ -151,11 +246,22 @@ AUTH_INSTRUCTIONS = (
 
 
 def _looks_like_auth_error(stderr: str) -> bool:
+    """True if claude's stderr smells like an auth failure (loose match)."""
     s = stderr.lower()
     return any(h in s for h in _AUTH_ERROR_HINTS)
 
 
 def run_claude(prompt: str) -> str:
+    """Pipe ``prompt`` to ``claude -p`` and return its stdout, stripped.
+
+    Maps three failure modes to clean ``SummariseError`` messages:
+      - ``claude`` not on PATH (hint at install URL)
+      - subprocess timed out (suggest a shorter video)
+      - non-zero exit (auth-shaped stderr → AUTH_INSTRUCTIONS, else generic)
+
+    Anything else propagates — we'd rather see a real traceback than swallow
+    a bug.
+    """
     if shutil.which("claude") is None:
         raise SummariseError(
             "Claude Code CLI not found on PATH. Install it from "
@@ -185,10 +291,12 @@ def run_claude(prompt: str) -> str:
 
 
 def check_claude_auth() -> tuple[bool, str]:
-    """Probe `claude -p` with a tiny prompt to confirm it's installed and authenticated.
+    """Probe ``claude -p`` with a tiny prompt to confirm install + auth.
 
-    Returns (ok, message). Cheap-ish — takes a few seconds. Use at startup or in a
-    health endpoint, not per-request.
+    Returns ``(ok, message)``. Cheap-ish — takes a few seconds because it
+    actually round-trips a prompt. Use at startup or in a health endpoint,
+    not per request. The ``message`` is suitable to display verbatim in
+    the UI on failure (e.g., on the auth banner).
     """
     if shutil.which("claude") is None:
         return False, "Claude Code CLI not found on PATH."
@@ -210,8 +318,21 @@ def check_claude_auth() -> tuple[bool, str]:
     return True, "Authenticated."
 
 
+# ---------------------------------------------------------------------------
+# Library entry point
+# ---------------------------------------------------------------------------
+
+
 def summarise_url(url: str) -> SummaryResult:
-    """End-to-end: URL in, structured summary out. Raises SummariseError on user-visible failure."""
+    """End-to-end: URL in, structured ``SummaryResult`` out.
+
+    Wires together URL parsing → transcript fetch → prompt build → claude
+    call. All user-facing failure modes are translated to ``SummariseError``
+    with messages safe to display unmodified.
+
+    Used by both the CLI ``main()`` (for piping markdown to a file) and
+    the FastAPI app (for rendering the web UI).
+    """
     try:
         video_id = extract_video_id(url)
     except ValueError as e:
@@ -237,10 +358,16 @@ def summarise_url(url: str) -> SummaryResult:
         thumbnail_url=thumbnail_url(video_id),
         body_markdown=body,
         segment_count=len(segments),
-        approx_tokens=len(prompt) // 4,
+        approx_tokens=len(prompt) // 4,  # rough char→token heuristic
     )
 
 
+# ---------------------------------------------------------------------------
+# CLI — terminal spinner & main()
+# ---------------------------------------------------------------------------
+
+# Braille frames for a smooth in-place spinner. UTF-8 only; the fallback
+# below covers cases where stderr isn't a real terminal anyway.
 _SPINNER_FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 
 
@@ -248,10 +375,13 @@ _SPINNER_FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 def _cli_spinner(label: str):
     """Animate a spinner + elapsed counter on stderr until the block exits.
 
-    Falls back to a single printed line when stderr isn't a terminal (e.g. when
-    the script is run from a CI job or piped to a log file).
+    Used to keep the user informed during the slow ``claude -p`` call. Falls
+    back to a single printed line when stderr isn't a terminal (e.g. when
+    the script is run from a CI job or piped to a log file) so logs don't
+    fill with carriage-return junk.
     """
     if not sys.stderr.isatty():
+        # Non-TTY: emit one static line and skip the animation entirely.
         print(f"      {label}...", file=sys.stderr, flush=True)
         yield
         return
@@ -268,6 +398,7 @@ def _cli_spinner(label: str):
             sys.stderr.flush()
             stop.wait(0.1)
             i += 1
+        # Wipe the spinner line on exit so the next print starts clean.
         sys.stderr.write("\r" + " " * (len(label) + 30) + "\r")
         sys.stderr.flush()
 
@@ -281,7 +412,16 @@ def _cli_spinner(label: str):
 
 
 def main() -> None:
-    # Windows defaults stdout to cp1252; force UTF-8 so em-dashes survive piping.
+    """CLI entry point.
+
+    Parses args, runs the three-step pipeline (fetch → summarise → save),
+    and prints progress to stderr. Markdown output goes to either
+    ``<video-id>.md`` in CWD (default), a path passed via ``-o``, or
+    stdout when ``-o -`` is used. Non-zero exit on any failure with a
+    one-line ``error: …`` message.
+    """
+    # Windows defaults stdout to cp1252; force UTF-8 so em-dashes and other
+    # non-Latin-1 characters survive piping into files.
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
 
@@ -298,6 +438,7 @@ def main() -> None:
     )
     args = parser.parse_args()
 
+    # --check is a special mode: probe auth, print the result, exit 0/1.
     if args.check:
         ok, msg = check_claude_auth()
         print(msg)
@@ -306,11 +447,13 @@ def main() -> None:
     if not args.url:
         parser.error("url is required (or use --check)")
 
+    # Step 1 — parse URL into a video ID.
     try:
         video_id = extract_video_id(args.url)
     except ValueError as e:
         sys.exit(f"error: {e}")
 
+    # Step 2 — fetch the transcript (network call to YouTube).
     print(f"[1/3] fetching transcript for {video_id}...", file=sys.stderr)
     try:
         segments = fetch_transcript(video_id)
@@ -322,11 +465,14 @@ def main() -> None:
     if not segments:
         sys.exit("error: transcript was empty.")
 
+    # Build the prompt up front so we can show the token estimate before
+    # the (slow) Claude call kicks off.
     watch_url = canonical_watch_url(video_id)
     prompt = build_prompt(watch_url, format_transcript(segments))
     approx_tokens = len(prompt) // 4
     print(f"      → {len(segments)} segments, ~{approx_tokens} tokens", file=sys.stderr)
 
+    # Step 3 — call Claude. This is the long one (typically 30-90s).
     print(f"[2/3] summarising with Claude (typically 30-90s for long videos)...", file=sys.stderr)
     try:
         with _cli_spinner("Claude is roboting.."):
@@ -334,12 +480,15 @@ def main() -> None:
     except SummariseError as e:
         sys.exit(f"error: {e}")
 
+    # Compose the final markdown: thumbnail + watch link header, then the
+    # LLM body. Same shape the web UI renders.
     full_md = (
         f"[![Video thumbnail]({thumbnail_url(video_id)})]({watch_url})\n\n"
         f"**[Watch on YouTube]({watch_url})**\n\n"
         f"{body}\n"
     )
 
+    # Step 4 — write output. `-o -` means stdout; otherwise a real file.
     if args.output == "-":
         print("[3/3] writing to stdout", file=sys.stderr)
         print(full_md)
