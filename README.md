@@ -9,6 +9,13 @@ Two ways to use it:
 
 Both shell out to your local **Claude Code** CLI (`claude -p`), so the LLM call uses your existing Claude subscription rather than a paid API key.
 
+**Standard test videos** — used throughout development and referenced in the diagnostics so they're easy to grab:
+
+- <https://youtu.be/R65qnDnSFWY> — 42 min, ~12k tokens
+- <https://youtu.be/P60LqQg1RH8> — 31 min, ~10k tokens
+
+Both comfortably clear the brief's 30-minute hard requirement and have stable English captions, so they're a good baseline whenever you're tweaking the prompt or comparing models.
+
 ## Notes on the brief
 
 > *"The interesting part is how you handled the 30+ minute videos, so tell us what you picked: chunking, big context, map-reduce, or something weirder."*
