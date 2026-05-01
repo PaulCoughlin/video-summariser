@@ -100,6 +100,8 @@ Open http://127.0.0.1:8000 in your browser.
 
 A small dropdown next to the URL input lets you pick the model — `default` (your `claude` global setting), `sonnet`, `opus`, or `haiku`. Most of the time you'll leave it on `default`; switch to `opus` for a dense talk where you want the best summary quality, or `haiku` for a quick draft.
 
+> **Pinning to a specific version.** The aliases (`sonnet`, `opus`, `haiku`) get bumped to the current generation as Anthropic ships new versions. To pin to a specific model ID — for instance the 1M-context Opus variant — add an entry to `SUPPORTED_MODELS` in [`summarise.py`](summarise.py) where the value is the full ID (e.g. `claude-opus-4-7-20250930`) instead of the alias. The CLI choices, validation, and the dropdown all read from that one dict, so a single edit gives you the new option in all three places. Look up exact model IDs at [Anthropic's models overview](https://docs.anthropic.com/en/docs/about-claude/models/overview).
+
 While the summary is generating, a small log card streams the pipeline status in real time over Server-Sent Events:
 
 ```

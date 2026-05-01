@@ -143,6 +143,12 @@ async def summarise_endpoint(
     user sees live progress. This endpoint is kept around for scripted
     callers that just want the rendered HTML (e.g. ``curl -X POST -d url=…``).
 
+    Form fields:
+      - ``url``   — required; the YouTube URL to summarise.
+      - ``model`` — optional; one of the keys in ``SUPPORTED_MODELS``
+        (``"default"``, ``"sonnet"``, ``"opus"``, ``"haiku"``). Defaults to
+        ``"default"`` which leaves the model choice to claude's global setting.
+
     Both success and error responses return HTTP 200 with an HTML fragment —
     the caller can decide how to display it.
 
@@ -231,6 +237,13 @@ async def summarise_stream(
       - a ``result`` event whose data is JSON-encoded ``{"html": "..."}``
         containing the rendered summary fragment, or
       - an ``error`` event whose data is the user-facing error message.
+
+    Query params:
+      - ``url``   — required; the YouTube URL to summarise.
+      - ``model`` — optional; one of the keys in ``SUPPORTED_MODELS``
+        (``"default"``, ``"sonnet"``, ``"opus"``, ``"haiku"``). The active
+        model is included in the progress log so users can see which one
+        is doing the work.
 
     The summarise pipeline is sync (blocks on subprocess), so the worker
     runs in the default threadpool and bridges progress messages onto the

@@ -23,9 +23,10 @@ imported by the FastAPI app in ``app.py``. The high-level flow is:
       auth missing, timeout, etc.). Anything else is a bug; let it surface.
 
 **Run as a script:**
-    py summarise.py <url>          # writes <video-id>.md in CWD
-    py summarise.py --check        # verify Claude Code is signed in
-    py summarise.py <url> -o -     # write markdown to stdout instead
+    py summarise.py <url>                # writes <video-id>.md in CWD
+    py summarise.py --check              # verify Claude Code is signed in
+    py summarise.py <url> -o -           # write markdown to stdout instead
+    py summarise.py <url> --model opus   # override the model
 """
 
 from __future__ import annotations
@@ -260,6 +261,18 @@ def _looks_like_auth_error(stderr: str) -> bool:
 # Models exposed to the UI / CLI. Map of "user-visible name" → flag value
 # passed to `claude -p --model …`. ``None`` means "don't pass --model at all,
 # use whatever model the user's claude install is globally configured to use".
+#
+# Editing this dict is the single point of customisation: the CLI's
+# ``--model`` choices, ``run_claude``'s validation, and the web-UI dropdown
+# all read from it. Add an entry to expose a new option in all three places.
+#
+# The value can be either:
+#   - a Claude Code alias  ("sonnet", "opus", "haiku"), which Anthropic
+#     bumps to the current generation as new versions ship; or
+#   - a fully-qualified model ID (e.g. "claude-opus-4-7-20250930") to pin
+#     to a specific version. Useful for the 1M-context Opus variant or
+#     when you want reproducibility across alias bumps. Look up exact IDs
+#     at https://docs.anthropic.com/en/docs/about-claude/models/overview .
 SUPPORTED_MODELS: dict[str, str | None] = {
     "default": None,
     "sonnet": "sonnet",
