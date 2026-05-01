@@ -41,8 +41,8 @@ If a video genuinely overflowed (it'd need to be ~5+ hours of dense speech), the
 
 Both the CLI and the web UI let you pick which Claude model to use, with a `default` option that's the safe choice 99% of the time.
 
-- **`default`** — *don't* pass `--model` at all to `claude -p`, so the call uses whatever your `claude` install is globally configured for (your tier's current Sonnet / Opus / Haiku alias, or whatever you've set via `claude /model …` or `~/.claude/settings.json`). This means you don't have to update the app every time Anthropic ships a new version — the alias already follows the latest one.
-- **`sonnet` / `opus` / `haiku`** — explicit overrides. Useful when you want to deviate from your default for a specific summary: bump to `opus` for a particularly dense talk, drop to `haiku` for a quick scan.
+- **`Default`** — *don't* pass `--model` at all to `claude -p`, so the call uses whatever your `claude` install is globally configured for (your tier's current Sonnet / Opus / Haiku alias, or whatever you've set via `claude /model …` or `~/.claude/settings.json`). This means you don't have to update the app every time Anthropic ships a new version — the alias already follows the latest one.
+- **`Sonnet` / `Opus` / `Haiku`** — explicit overrides. Useful when you want to deviate from your default for a specific summary: bump to `Opus` for a particularly dense talk, drop to `Haiku` for a quick scan.
 
 The list of selectable models lives in a single dict, [`SUPPORTED_MODELS`](summarise.py) in `summarise.py`. Editing that one place updates the CLI's `--model` choices, the validation in `run_claude()`, and the web-UI dropdown — all three stay in sync automatically.
 
@@ -50,11 +50,11 @@ The list of selectable models lives in a single dict, [`SUPPORTED_MODELS`](summa
 
 ```python
 SUPPORTED_MODELS = {
-    "default": None,
-    "sonnet": "sonnet",
-    "opus": "opus",
-    "opus-1m": "claude-opus-4-7-1m-…",  # paste the real ID from Anthropic's docs
-    "haiku": "haiku",
+    "Default": None,
+    "Sonnet": "sonnet",
+    "Opus": "opus",
+    "Opus-1M": "claude-opus-4-7-1m-…",  # paste the real ID from Anthropic's docs
+    "Haiku": "haiku",
 }
 ```
 
@@ -104,10 +104,10 @@ py summarise.py "https://youtu.be/VIDEO_ID" -o my-notes.md
 py summarise.py "https://youtu.be/VIDEO_ID" -o -
 
 # Override the model (handy for particularly dense videos):
-py summarise.py "https://youtu.be/VIDEO_ID" --model opus
+py summarise.py "https://youtu.be/VIDEO_ID" --model Opus
 ```
 
-`--model` accepts `default` (your `claude` global setting — the default), `sonnet`, `opus`, or `haiku`. The active model is printed in the progress lines so you can see which one is doing the work.
+`--model` accepts `Default` (your `claude` global setting — the default), `Sonnet`, `Opus`, or `Haiku`. Matched case-insensitively, so lowercase still works. The active model is printed in the progress lines so you can see which one is doing the work.
 
 If you're not signed in, you'll get:
 
@@ -121,7 +121,7 @@ py -m uvicorn app:app --reload --port 8000
 
 Open http://127.0.0.1:8000 in your browser.
 
-A dropdown next to the URL input lets you pick the model — `default` (your `claude` global setting), `sonnet`, `opus`, or `haiku`. Most of the time you'll leave it on `default`; switch to `opus` for a dense talk where you want the best summary quality, or `haiku` for a quick draft. See [Model selection](#model-selection-built-in) for how to add custom variants like the 1M-context Opus.
+A dropdown next to the URL input lets you pick the model — `Default` (your `claude` global setting), `Sonnet`, `Opus`, or `Haiku`. Most of the time you'll leave it on `Default`; switch to `Opus` for a dense talk where you want the best summary quality, or `Haiku` for a quick draft. See [Model selection](#model-selection-built-in) for how to add custom variants like the 1M-context Opus.
 
 While the summary is generating, a small log card streams the pipeline status in real time over Server-Sent Events:
 
@@ -129,7 +129,7 @@ While the summary is generating, a small log card streams the pipeline status in
 [14:32:11] starting
 [14:32:11] parsing video URL
 [14:32:11] fetching transcript for P60LqQg1RH8
-[14:32:13] got 768 segments (~10154 tokens) — calling Claude (model: default)
+[14:32:13] got 768 segments (~10154 tokens) — calling Claude (model: Default)
 [14:33:04] summary received
 [14:33:04] rendering
 ```

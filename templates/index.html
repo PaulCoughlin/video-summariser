@@ -101,8 +101,8 @@
           class="flex-1 bg-ink-800 border border-ink-700 rounded-lg px-3 py-2 text-slate-200 focus:outline-none focus:ring-2 focus:ring-accent focus:border-transparent transition disabled:cursor-not-allowed"
         >
           {% for m in models %}
-          <option value="{{ m }}" {% if m == "default" %}selected{% endif %}>
-            {{ m }}{% if m == "default" %} (your claude global setting){% endif %}
+          <option value="{{ m }}" {% if m == "Default" %}selected{% endif %}>
+            {{ m }}{% if m == "Default" %} (your claude global setting){% endif %}
           </option>
           {% endfor %}
         </select>
@@ -165,7 +165,7 @@
         const data = new FormData(form);
         const params = new URLSearchParams();
         params.set('url', data.get('url'));
-        params.set('model', data.get('model') || 'default');
+        params.set('model', data.get('model') || 'Default');
 
         // Disable the form while a request is in flight.
         const controls = form.querySelectorAll('input, select, button');
