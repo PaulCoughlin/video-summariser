@@ -15,9 +15,8 @@ imported by the FastAPI app in ``app.py``. The high-level flow is:
     - ``summarise_url(url, on_progress=None, model=None) -> SummaryResult`` —
       end-to-end entry point. Pass ``on_progress(msg)`` to receive a status
       string at each pipeline step (used by the web UI for live logs). Pass
-      ``model="Opus"`` (or ``"Sonnet"``/``"Haiku"``) to override the model;
-      ``None`` or ``"Default"`` uses your ``claude`` CLI's global setting.
-      Matched case-insensitively, so lowercase still works.
+      ``model="opus"`` (or ``"sonnet"``/``"haiku"``) to override the model;
+      ``None`` or ``"default"`` uses your ``claude`` CLI's global setting.
     - ``check_claude_auth() -> (ok, message)`` — cheap startup probe.
     - ``SUPPORTED_MODELS`` — dict of model-name → ``--model`` flag value.
     - ``SummariseError`` — raised for any user-facing failure (no captions,
@@ -27,7 +26,7 @@ imported by the FastAPI app in ``app.py``. The high-level flow is:
     py summarise.py <url>                # writes <video-id>.md in CWD
     py summarise.py --check              # verify Claude Code is signed in
     py summarise.py <url> -o -           # write markdown to stdout instead
-    py summarise.py <url> --model Opus   # override the model
+    py summarise.py <url> --model opus   # override the model
 """
 
 from __future__ import annotations
@@ -275,42 +274,20 @@ def _looks_like_auth_error(stderr: str) -> bool:
 #     when you want reproducibility across alias bumps. Look up exact IDs
 #     at https://docs.anthropic.com/en/docs/about-claude/models/overview .
 SUPPORTED_MODELS: dict[str, str | None] = {
-    "Default": None,
-    "Sonnet": "sonnet",
-    "Opus": "opus",
-    "Haiku": "haiku",
+    "default": None,
+    "sonnet": "sonnet",
+    "opus": "opus",
+    "haiku": "haiku",
 }
-
-
-def _resolve_model(model: str | None) -> tuple[str, str | None]:
-    """Look up a model key in ``SUPPORTED_MODELS`` case-insensitively.
-
-    Returns ``(canonical_key, flag)`` where ``canonical_key`` is the key as
-    written in the dict (used for display/log) and ``flag`` is the value
-    passed to ``claude --model`` (or ``None`` to skip the flag).
-
-    Lets callers type any case (``"opus"``, ``"Opus"``, ``"OPUS"``) while
-    the dict keeps a single canonical Title-Case spelling for the UI.
-    Raises ``SummariseError`` for an unknown name.
-    """
-    target = (model or "Default").strip().lower()
-    for key, flag in SUPPORTED_MODELS.items():
-        if key.lower() == target:
-            return key, flag
-    raise SummariseError(
-        f"Unknown model {model!r}. Use one of: "
-        + ", ".join(SUPPORTED_MODELS.keys())
-    )
 
 
 def run_claude(prompt: str, model: str | None = None) -> str:
     """Pipe ``prompt`` to ``claude -p`` and return its stdout, stripped.
 
-    ``model`` is matched case-insensitively against the keys of
-    ``SUPPORTED_MODELS`` (``"Sonnet"``, ``"Opus"``, ``"Haiku"``); ``None``
-    or ``"Default"`` leaves the choice to ``claude``'s global setting
-    (whatever ``~/.claude/settings.json`` / ``ANTHROPIC_MODEL`` resolves
-    to).
+    ``model`` is one of the keys of ``SUPPORTED_MODELS`` (``"sonnet"``,
+    ``"opus"``, ``"haiku"``) or ``None`` / ``"default"`` to leave the choice
+    to ``claude``'s global setting (whatever ``~/.claude/settings.json`` /
+    ``ANTHROPIC_MODEL`` resolves to).
 
     Maps three failure modes to clean ``SummariseError`` messages:
       - ``claude`` not on PATH (hint at install URL)
@@ -327,7 +304,12 @@ def run_claude(prompt: str, model: str | None = None) -> str:
         )
 
     cmd: list[str] = ["claude", "-p"]
-    _key, flag = _resolve_model(model)
+    flag = SUPPORTED_MODELS.get((model or "default").lower(), "__unknown__")
+    if flag == "__unknown__":
+        raise SummariseError(
+            f"Unknown model {model!r}. Use one of: "
+            + ", ".join(SUPPORTED_MODELS.keys())
+        )
     if flag is not None:
         cmd += ["--model", flag]
 
@@ -432,9 +414,7 @@ def summarise_url(
     watch_url = canonical_watch_url(video_id)
     prompt = build_prompt(watch_url, format_transcript(segments))
     approx_tokens = len(prompt) // 4
-    # Use the canonical Title-Case key from the dict, regardless of how
-    # the caller spelled it.
-    model_label, _ = _resolve_model(model)
+    model_label = (model or "default").lower()
     progress(
         f"got {len(segments)} segments (~{approx_tokens} tokens) — "
         f"calling Claude (model: {model_label})"
@@ -526,22 +506,13 @@ def main() -> None:
         help="Output file path. Defaults to <video-id>.md in the current directory. "
              "Use '-' to write to stdout instead.",
     )
-    def _model_choice(s: str) -> str:
-        # Case-insensitive: accept "opus" or "Opus" → return canonical "Opus".
-        try:
-            key, _ = _resolve_model(s)
-        except SummariseError as e:
-            raise argparse.ArgumentTypeError(str(e))
-        return key
-
     parser.add_argument(
         "-m", "--model",
-        type=_model_choice,
-        default="Default",
-        metavar="{" + ",".join(SUPPORTED_MODELS.keys()) + "}",
-        help="Which Claude model to use. 'Default' (the default) leaves the "
-             "choice to your `claude` CLI's global setting. Pass 'Opus' for "
-             "particularly dense videos. Case-insensitive.",
+        choices=tuple(SUPPORTED_MODELS.keys()),
+        default="default",
+        help="Which Claude model to use. 'default' (the default) leaves the "
+             "choice to your `claude` CLI's global setting. Pass 'opus' for "
+             "particularly dense videos.",
     )
     args = parser.parse_args()
 

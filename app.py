@@ -135,7 +135,7 @@ async def healthz() -> JSONResponse:
 async def summarise_endpoint(
     request: Request,
     url: str = Form(...),
-    model: str = Form("Default"),
+    model: str = Form("default"),
 ) -> HTMLResponse:
     """Non-streaming fall-back: run the pipeline and return the summary in one shot.
 
@@ -145,10 +145,9 @@ async def summarise_endpoint(
 
     Form fields:
       - ``url``   — required; the YouTube URL to summarise.
-      - ``model`` — optional; matched case-insensitively against the keys in
-        ``SUPPORTED_MODELS`` (``"Default"``, ``"Sonnet"``, ``"Opus"``,
-        ``"Haiku"``). Defaults to ``"Default"`` which leaves the model
-        choice to claude's global setting.
+      - ``model`` — optional; one of the keys in ``SUPPORTED_MODELS``
+        (``"default"``, ``"sonnet"``, ``"opus"``, ``"haiku"``). Defaults to
+        ``"default"`` which leaves the model choice to claude's global setting.
 
     Both success and error responses return HTTP 200 with an HTML fragment —
     the caller can decide how to display it.
@@ -228,7 +227,7 @@ def _sse(event: str, data: str) -> str:
 async def summarise_stream(
     request: Request,
     url: str,
-    model: str = "Default",
+    model: str = "default",
 ) -> StreamingResponse:
     """Stream the summarisation pipeline as Server-Sent Events.
 
@@ -241,10 +240,10 @@ async def summarise_stream(
 
     Query params:
       - ``url``   — required; the YouTube URL to summarise.
-      - ``model`` — optional; matched case-insensitively against the keys
-        in ``SUPPORTED_MODELS`` (``"Default"``, ``"Sonnet"``, ``"Opus"``,
-        ``"Haiku"``). The active model is included in the progress log so
-        users can see which one is doing the work.
+      - ``model`` — optional; one of the keys in ``SUPPORTED_MODELS``
+        (``"default"``, ``"sonnet"``, ``"opus"``, ``"haiku"``). The active
+        model is included in the progress log so users can see which one
+        is doing the work.
 
     The summarise pipeline is sync (blocks on subprocess), so the worker
     runs in the default threadpool and bridges progress messages onto the
