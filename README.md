@@ -1,4 +1,5 @@
-# video-summariser
+# Video Summariser
+## Agentic Labs Challenge
 
 Paste a YouTube URL → get a TL;DR, key takeaways, and clickable timestamped moments.
 
